@@ -212,6 +212,75 @@ const { chromium } = require('playwright');
     await page.screenshot({ path: 'shot_outputs.png' });
   });
 
+  await step('mobile touch: pan + auto-follow', async () => {
+    const tctx = await browser.newContext({
+      acceptDownloads: true, viewport: { width: 390, height: 844 },
+      hasTouch: true, isMobile: true,
+      userAgent: 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36',
+    });
+    const tp = await tctx.newPage();
+    tp.on('pageerror', e => errors.push('pageerror(touch): ' + e.message));
+    await tp.goto(base + '#studio');
+    await tp.waitForSelector('#stFile', { state: 'attached' });
+    // a.wav=4s (lane0), b.wav=3s (lane1) -> lane1 has an empty tail (pan grab zone)
+    await tp.setInputFiles('#stFile', [T + 'a.wav', T + 'b.wav']);
+    await tp.waitForTimeout(500);
+    const box = await tp.locator('#tl').boundingBox();
+    const scrollEl = '#studio-scroll';
+    // touch-action must be none for unified pointer dragging
+    const ta = await tp.locator(scrollEl).evaluate(el => getComputedStyle(el).touchAction);
+    if (ta !== 'none') throw new Error('touch-action=' + ta + ' (expected none)');
+    // Pick a zoom (p) where: lane1 empty tail is visible at scrollLeft=0 AND content overflows viewport
+    const geo = await tp.evaluate(() => {
+      const wrap = document.getElementById('studio-scroll');
+      const cw = wrap.clientWidth;
+      for (let p = 90; p >= 48; p -= 4) {
+        const grabX = MARGIN + 3 * p + 14;      // 14px past clip-b end (clears 9px trim zone)
+        const scrollable = MARGIN + 4 * p - cw; // canvas(a=4s) - viewport
+        if (grabX < cw - 10 && scrollable >= 10) { st.p = p; stDirty(); return { p, grabX, cw, scrollable, M: MARGIN }; }
+      }
+      throw new Error('no suitable zoom for pan test (cw=' + cw + ')');
+    });
+    await tp.waitForTimeout(200);
+    // 2-FINGER PINCH-PAN (synthetic touch pointers; coords in SCREEN space like real fingers,
+    // because the canvas rect shifts as scrollLeft changes under the app's live-rect math)
+    const pinch = await tp.evaluate(() => {
+      const cv = document.getElementById('tl');
+      const r0 = cv.getBoundingClientRect();
+      const wrap = document.getElementById('studio-scroll');
+      const s7 = r0.left + 160, s8 = r0.left + 240, sy = r0.top + 60;
+      const mk = (type, cx, id) => cv.dispatchEvent(new PointerEvent(type, {
+        pointerId: id, clientX: cx, clientY: sy,
+        pointerType: 'touch', bubbles: true, cancelable: true,
+      }));
+      mk('pointerdown', s7, 7); mk('pointerdown', s8, 8);
+      for (let i = 1; i <= 6; i++) { mk('pointermove', s7 - i * 10, 7); mk('pointermove', s8 - i * 10, 8); }
+      mk('pointerup', s7 - 60, 7); mk('pointerup', s8 - 60, 8);
+      return wrap.scrollLeft;
+    });
+    if (pinch < 5) throw new Error('2-finger pan did not scroll (scrollLeft=' + pinch + ')');
+    // 1-FINGER PAN on empty lane tail (lane1, x past clip-b end)
+    await tp.locator(scrollEl).evaluate(el => el.scrollLeft = 0);
+    await tp.waitForTimeout(100);
+    const before = await tp.locator(scrollEl).evaluate(el => el.scrollLeft);
+    await tp.mouse.move(box.x + geo.grabX, box.y + 147);
+    await tp.mouse.down();
+    for (let i = 1; i <= 6; i++) await tp.mouse.move(box.x + geo.grabX - i * 2, box.y + 147);
+    await tp.mouse.up();
+    await tp.waitForTimeout(150);
+    const after = await tp.locator(scrollEl).evaluate(el => el.scrollLeft);
+    if (after - before < 5) throw new Error('1-finger pan did not scroll (before=' + before + ' after=' + after + ')');
+    // AUTO-FOLLOW: play from 0; playhead must keep timeline scrolling at right edge
+    await tp.locator(scrollEl).evaluate(el => el.scrollLeft = 0);
+    await tp.click('#stPlayBtn');
+    const followWait = Math.min(Math.round((geo.cw - 80 - geo.M) / geo.p * 1000) + 400, 3900);
+    await tp.waitForTimeout(followWait);
+    const mid = await tp.locator(scrollEl).evaluate(el => el.scrollLeft);
+    await tp.click('#stPlayBtn'); // pause
+    if (mid < 1) throw new Error('playhead auto-follow did not scroll (scrollLeft=' + mid + ')');
+    await tctx.close();
+  });
+
   await step('mobile views', async () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(base + '#home');

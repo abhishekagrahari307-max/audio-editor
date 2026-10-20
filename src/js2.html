@@ -244,6 +244,14 @@ async function stPlay(){
     st.playhead=c.currentTime-st.startAt;
     if(st.playhead>=total){ st.playhead=total; stPause(); }
     stFrame(); stTimeUI();
+    if(!st.drag){
+      const wrap=$('#studio-scroll');
+      if(wrap){
+        const px=stX(st.playhead);
+        if(px>wrap.scrollLeft+wrap.clientWidth-80) wrap.scrollLeft=px-wrap.clientWidth+80;
+        if(px<wrap.scrollLeft+MARGIN) wrap.scrollLeft=Math.max(0,px-MARGIN-10);
+      }
+    }
     st.raf=requestAnimationFrame(tick);
   };
   stTimeUI(); tick();
@@ -291,12 +299,21 @@ function stBindPointer(cv){
     }
     return {m:'empty',ti};
   };
-  const dist=()=>{ const pts=[...st.pointers.values()]; return Math.hypot(pts[0].x-pts[1].x,pts[0].y-pts[1].y); };
+  const dist=()=>{ const pts=[...st.pointers.values()]; return Math.hypot(pts[0].cx-pts[1].cx,pts[0].cy-pts[1].cy); };
   cv.addEventListener('pointerdown',e=>{
     const {x,y}=pos(e);
-    st.pointers.set(e.pointerId,{x,y});
+    st.pointers.set(e.pointerId,{x,y,cx:e.clientX,cy:e.clientY});
     try{cv.setPointerCapture(e.pointerId);}catch(err){}
-    if(st.pointers.size===2){ st.drag={m:'pinch',d0:dist(),p0:st.p}; return; }
+    if(st.pointers.size===2){
+      const [A,B]=[...st.pointers.values()];
+      const wEl=$('#studio-scroll');
+      const L0=cv.getBoundingClientRect().left;
+      const sl0=wEl?wEl.scrollLeft:0, st0=wEl?wEl.scrollTop:0;
+      const mx0=(A.cx+B.cx)/2, my0=(A.cy+B.cy)/2;
+      const t0=(mx0-L0-MARGIN)/st.p;
+      st.drag={m:'pinch',d0:dist(),p0:st.p,L0,sl0,st0,mx0,my0,t0};
+      return;
+    }
     if(st.pointers.size>2) return;
     const h=hit(x,y);
     if(h.m==='ruler'){ st.playhead=clamp(stT(x),0,Math.max(stTotal(),0)); stFrame(); stTimeUI(); st.drag={m:'seek'}; return; }
@@ -319,30 +336,40 @@ function stBindPointer(cv){
       st.drag={m:h.m,c:h.c,ti:h.ti,x0:x,len0:h.c.len,start0:h.c.start,off0:h.c.offset,moved:false};
       return;
     }
-    if(h.m==='empty') stSelect(null);
+    if(h.m==='empty'){
+      stSelect(null);
+      const wrap=$('#studio-scroll');
+      if(wrap) st.drag={m:'pan',x0:e.clientX,y0:e.clientY,sl0:wrap.scrollLeft,st0:wrap.scrollTop,moved:false};
+      return;
+    }
   });
   cv.addEventListener('pointermove',e=>{
     const {x,y}=pos(e);
-    if(st.pointers.has(e.pointerId)) st.pointers.set(e.pointerId,{x,y});
+    if(st.pointers.has(e.pointerId)) st.pointers.set(e.pointerId,{x,y,cx:e.clientX,cy:e.clientY});
     if(st.pointers.size>=2){
       if(st.drag&&st.drag.m==='pinch'){
         const d=dist();
         const wrap=$('#studio-scroll'); if(!wrap) return;
-        const Wv=wrap.clientWidth;
-        const tc=stT(wrap.scrollLeft+Wv/2);
-        st.p=clamp(st.drag.p0*d/st.drag.d0,8,400);
-        wrap.scrollLeft=MARGIN+tc*st.p-Wv/2;
+        const [A,B]=[...st.pointers.values()];
+        const mx=(A.cx+B.cx)/2, my=(A.cy+B.cy)/2;
+        st.p=clamp(st.drag.p0*d/Math.max(1,st.drag.d0),8,400);
+        wrap.scrollLeft=st.drag.L0+st.drag.sl0+MARGIN+st.drag.t0*st.p-mx;
+        wrap.scrollTop=st.drag.st0-(my-st.drag.my0);
         stDirty();
       }
       return;
     }
     if(!st.drag){
       const h=hit(x,y);
-      cv.style.cursor=(h.m==='tl'||h.m==='tr')?'ew-resize':(h.m==='body'?'grab':(h.m==='ruler'?'pointer':(h.m==='tm'||h.m==='ts'||h.m==='tk'?'pointer':'default')));
+      cv.style.cursor=(h.m==='tl'||h.m==='tr')?'ew-resize':((h.m==='body'||h.m==='empty')?'grab':(h.m==='ruler'?'pointer':(h.m==='tm'||h.m==='ts'||h.m==='tk'?'pointer':'default')));
       return;
     }
     const d=st.drag;
     if(d.m==='seek'){ st.playhead=clamp(stT(x),0,Math.max(stTotal(),0)); stFrame(); stTimeUI(); return; }
+    if(d.m==='pan'){
+      const wrap=$('#studio-scroll'); if(!wrap) return;
+      wrap.scrollLeft=d.sl0-(e.clientX-d.x0); wrap.scrollTop=d.st0-(e.clientY-d.y0); d.moved=true; return;
+    }
     const t=st.tracks[d.ti];
     if(d.m==='move'){
       let ns=Math.max(0,d.start0+(x-d.x0)/st.p);
@@ -380,7 +407,7 @@ function stBindPointer(cv){
     st.pointers.delete(e.pointerId);
     if(st.drag){
       if(st.drag.m==='pinch'){ if(st.pointers.size<2) st.drag=null; return; }
-      if(st.drag.moved) stSnapshot();
+      if(st.drag.moved&&st.drag.m!=='pan') stSnapshot();
       st.drag=null;
     }
   };

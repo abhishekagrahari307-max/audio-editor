@@ -37,8 +37,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: site
-          path: [index.html, manifest.json, sw.js, icon.svg]
-
+          path: "index.html\nmanifest.json\nsw.js\nicon.svg"
   qa:
     name: Browser QA (Playwright)
     needs: build

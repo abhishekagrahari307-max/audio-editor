@@ -119,9 +119,22 @@ function resampleLinear(buf,targetSR){
   }
   return out;
 }
+/* ---- lazy MP3 encoder: compiles on first use so initial load stays fast ---- */
+let _lameState=0; // 0 unknown · 1 ready · 2 unavailable
+function ensureLame(){
+  if(window.lamejs&&window.lamejs.Mp3Encoder) return true;
+  if(_lameState===2) return false;
+  const s=_lameSrc();
+  if(!s){ _lameState=2; return false; }
+  try{ (0,eval)(s); }catch(e){ console.warn('lame init failed',e); }
+  const ok=!!(window.lamejs&&window.lamejs.Mp3Encoder);
+  _lameState=ok?1:2;
+  return ok;
+}
 function mp3Blob(buf,kbps=160){
   try{
-    const L=window.lamejs; if(!L||!L.Mp3Encoder) return null;
+    if(!ensureLame()) return null;
+    const L=window.lamejs;
     let b=buf, sr=buf.sampleRate;
     const ok=[44100,48000,32000,22050,16000,11025,8000].includes(sr);
     if(!ok){ b=resampleLinear(buf,44100); sr=44100; }
@@ -164,7 +177,9 @@ function encHud(on,p=0,label){
 /* ---- Web-Worker MP3 encoder (UI never freezes) ---- */
 let _mp3w=null,_mp3wDead=false;
 function _lameSrc(){
-  for(const s of document.scripts){ const t=s.textContent; if(t&&t.length>20000&&t.indexOf('Mp3Encoder')>-1) return t; }
+  const el=document.getElementById('lamejs-src');
+  if(el&&el.textContent&&el.textContent.indexOf('Mp3Encoder')>-1) return el.textContent;
+  for(const s of document.scripts){ const t=s.textContent; if(t&&t.length>20000&&t.indexOf('Mp3Encoder')>-1&&t.indexOf('lamejs-src')<0) return t; }
   return null;
 }
 const _MP3_WORKER_CODE='\n;('+function(){
@@ -227,7 +242,8 @@ async function mp3BlobAsync(buf,kbps=160,onProg){
     }catch(e){ console.warn('worker mp3 failed, falling back',e); }
   }
   /* chunked async fallback — yields to keep UI smooth */
-  const L=window.lamejs; if(!L||!L.Mp3Encoder) return null;
+  if(!ensureLame()) return null;
+  const L=window.lamejs;
   const enc=new L.Mp3Encoder(nc,sr,Math.min(kbps,320));
   const bs=1152,out=[];
   for(let i=0;i<len;i+=bs){
@@ -402,6 +418,28 @@ function proModal(go){
     <div class="row" style="justify-content:flex-end"><button class="btn primary" onclick="closeModal()">Got it</button></div>`);
 }
 
+/* ================= waveform peaks cache (60fps on long files) ================= */
+const _pkCache=new WeakMap();
+function peaksFor(d){
+  let m=_pkCache.get(d.buffer);
+  if(!m){ m=new Map(); _pkCache.set(d.buffer,m); }
+  let p=m.get(d.byteOffset);
+  if(p) return p;
+  const len=d.length;
+  const STEP=Math.max(16,Math.ceil(len/200000)); /* ≤200k buckets per channel */
+  const nb=Math.ceil(len/STEP);
+  const mn=new Float32Array(nb),mx=new Float32Array(nb),ab=new Float32Array(nb);
+  for(let b=0;b<nb;b++){
+    let lo=1,hi=-1,am=0;
+    const i1=Math.min(len,(b+1)*STEP);
+    for(let i=b*STEP;i<i1;i+=2){ const v=d[i]; if(v<lo)lo=v; if(v>hi)hi=v; const a=v<0?-v:v; if(a>am)am=a; }
+    mn[b]=lo;mx[b]=hi;ab[b]=am;
+  }
+  p={mn,mx,ab,step:STEP};
+  m.set(d.byteOffset,p);
+  return p;
+}
+
 /* ================= waveform drawing ================= */
 function drawPeaks(canvas,chData,opt={}){
   const dpr=window.devicePixelRatio||1;
@@ -410,12 +448,17 @@ function drawPeaks(canvas,chData,opt={}){
   const g=canvas.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0);
   g.clearRect(0,0,w,h);
   const color=opt.color||'#7d8fd6', midY=h/2;
-  const n=chData.length, step=Math.max(1,Math.floor(n/w));
+  const n=chData.length, pk=peaksFor(chData), pkStep=pk.step;
   for(let x=0;x<w;x++){
     let mn=1,mx=-1;
-    const i0=x*step, i1=Math.min(n,i0+step);
-    for(let i=i0;i<i1;i+=2){ const v=chData[i]; if(v<mn)mn=v; if(v>mx)mx=v; }
+    const i0=Math.floor(x*n/w), i1=Math.min(n,Math.floor((x+1)*n/w));
     if(i1<=i0){ const v=chData[Math.min(n-1,i0)]||0; mn=mx=v; }
+    else if(n/w>pkStep){ /* cached bucket pass — O(pixels) */
+      const b0=Math.floor(i0/pkStep), b1=Math.max(b0+1,Math.ceil(i1/pkStep));
+      for(let b=b0;b<b1;b++){ const lo=pk.mn[b]; if(lo<mn)mn=lo; const hi=pk.mx[b]; if(hi>mx)mx=hi; }
+    } else {
+      for(let i=i0;i<i1;i+=2){ const v=chData[i]; if(v<mn)mn=v; if(v>mx)mx=v; }
+    }
     g.fillStyle=color;
     g.fillRect(x, midY-mx*midY*.92, 1, Math.max(1,(mx-mn)*midY*.92));
   }

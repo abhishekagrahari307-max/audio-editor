@@ -6,14 +6,16 @@ const st={
   tracks:[],             // {id,name,color,clips,muted,solo,lock}
   sel:null, p:36, playhead:0, playing:false,
   sources:[], master:null, raf:0, startAt:0, nextId:1,
-  content:document.createElement('canvas'), drag:null,
-  snap:true, history:[], histIdx:-1, pointers:new Map(),
+  drag:null,
+  snap:true, history:[], histIdx:-1, pointers:new Map(), lofi:false,
 };
 const RULER=30, LANE=78, MARGIN=132, MIN_DUR=0.05;
 const PAL=[['#fbbf24','#d97706'],['#22d3ee','#0284c7'],['#34d399','#059669'],['#e879f9','#c026d3'],
            ['#60a5fa','#2563eb'],['#fb7185','#e11d48'],['#a78bfa','#7c3aed'],['#2dd4bf','#0d9488']];
-const stX=t=>MARGIN+t*st.p;
-const stT=x=>(x-MARGIN)/st.p;
+const stSl=()=>{ const w=$('#studio-scroll'); return w?w.scrollLeft:0; };
+const stX=t=>MARGIN+t*st.p-stSl();      /* canvas (viewport) x for time t */
+const stT=x=>(x+stSl()-MARGIN)/st.p;    /* time at canvas x (scroll-aware) */
+const stCX=t=>MARGIN+t*st.p;            /* content-space x (for scroll math) */
 const stBuf=id=>st.buffers[id];
 const trackAudible=t=>{ if(t.muted) return false; return st.tracks.some(x=>x.solo)?t.solo:true; };
 
@@ -55,9 +57,10 @@ function envAt(kt,dur,fi,fo,fc){
 }
 
 function stDirty(){
-  const emp=$('#stEmpty'), cv=$('#tl');
-  if(emp&&cv){ const has=st.tracks.length>0; emp.style.display=has?'none':'flex'; cv.style.display=has?'block':'none'; }
-  stRenderContent(); stFrame(); stTimeUI(); stToolbarUI();
+  if(!st.drag) st.lofi=false;
+  const emp=$('#stEmpty'), cv=$('#tl'), sp=$('#stSpacer');
+  if(emp&&cv){ const has=st.tracks.length>0; emp.style.display=has?'none':'flex'; cv.style.display=has?'block':'none'; if(sp) sp.style.display=has?'block':'none'; }
+  stFrame(); stTimeUI(); stToolbarUI();
 }
 
 function rulerStep(p){ const steps=[.25,.5,1,2,5,10,15,30,60,120,300]; for(const s of steps) if(s*p>=64) return s; return 600; }
@@ -66,21 +69,27 @@ function rulerStep(p){ const steps=[.25,.5,1,2,5,10,15,30,60,120,300]; for(const
 function stRenderContent(){
   const wrap=$('#studio-scroll'); if(!wrap) return;
   const total=Math.max(stTotal(),8);
-  const W=MARGIN+Math.max(wrap.clientWidth-MARGIN,(total+1.5)*st.p+24);
+  const spacer=$('#stSpacer');
+  if(spacer){ spacer.style.width=(MARGIN+(total+1.5)*st.p+24)+'px'; }
+  /* viewport-sized canvas (sticky) — only what's on screen gets painted */
+  const W=Math.max(320,wrap.clientWidth);
   const H=RULER+Math.max(st.tracks.length,1)*LANE+6;
+  if(spacer){ spacer.style.height=H+'px'; }
   const dpr=window.devicePixelRatio||1;
-  const cv=st.content;
+  const cv=$('#tl');
   cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr);
+  cv.style.width=W+'px'; cv.style.height=H+'px';
   const g=cv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0);
   g.fillStyle='#0a1230'; g.fillRect(0,0,W,H);
-  /* ruler */
+  const S=stSl(), t1=(S+W-MARGIN)/st.p;
+  /* ruler (visible range only) */
   g.fillStyle='#0d1738'; g.fillRect(0,0,W,RULER);
   g.strokeStyle='rgba(148,163,255,.25)'; g.beginPath(); g.moveTo(0,RULER+.5); g.lineTo(W,RULER+.5); g.stroke();
   const step=rulerStep(st.p), minor=step/5;
   g.font='600 11px system-ui, sans-serif'; g.textBaseline='alphabetic';
-  const maxT=(W-MARGIN)/st.p;
-  for(let i=0;i*minor<=maxT+1e-6;i++){
-    const t=i*minor, x=MARGIN+t*st.p, major=(i%5===0);
+  let ri0=Math.max(0,Math.floor((S-MARGIN)/st.p/minor)-1), ri1=Math.ceil(t1/minor);
+  for(let i=ri0;i<=ri1;i++){
+    const t=i*minor, x=MARGIN+t*st.p-S, major=(i%5===0);
     g.strokeStyle=major?'rgba(148,163,255,.4)':'rgba(148,163,255,.16)';
     g.beginPath(); g.moveTo(x+.5,RULER-(major?11:5)); g.lineTo(x+.5,RULER); g.stroke();
     if(major){
@@ -122,8 +131,9 @@ function stRenderContent(){
     /* track name above clips */
     g.font='700 12px system-ui, sans-serif'; g.fillStyle='#93a0c9';
     g.fillText(t.name,MARGIN+10,y+17);
-    /* clips */
+    /* clips (clipped to the timeline area so long clips never cover the pinned M/S/lock column) */
     const audible=trackAudible(t);
+    g.save(); g.beginPath(); g.rect(MARGIN,y,W-MARGIN,LANE); g.clip();
     t.clips.forEach((c,ci)=>{
       const x=stX(c.start), w=c.len*st.p, cy=y+26, ch=LANE-34;
       if(w<2) return;
@@ -132,7 +142,7 @@ function stRenderContent(){
       const grd=g.createLinearGradient(0,cy,0,cy+ch);
       grd.addColorStop(0,c1); grd.addColorStop(1,c2);
       rr(g,x,cy,w,ch,7); g.fillStyle=grd; g.globalAlpha=selected?1:(audible?.85:.35); g.fill(); g.globalAlpha=1;
-      /* waveform + clip detection */
+      /* waveform + clip detection (cached peaks — O(pixels), fast at any zoom) */
       const buf=stBuf(c.bufId);
       let clipped=false;
       if(buf){
@@ -140,19 +150,32 @@ function stRenderContent(){
         const sr=buf.sampleRate;
         const i0=Math.floor(c.offset*sr), n=Math.min(Math.floor(c.len*sr),data.length-i0);
         if(n>0&&w>6){
-          g.save(); rr(g,x+2,cy+2,Math.max(1,w-4),ch-4,5); g.clip();
-          g.strokeStyle='rgba(255,255,255,.72)'; g.lineWidth=1;
-          const cols=Math.max(2,Math.floor(w-4));
-          g.beginPath();
-          for(let px=0;px<cols;px++){
-            const a=i0+Math.floor(px/cols*n), b=Math.max(a+1,i0+Math.floor((px+1)/cols*n));
-            let mn=1,mx=-1;
-            for(let i=a;i<b;i+=2){ const v=data[i]; if(v<mn)mn=v; if(v>mx)mx=v; if(Math.abs(v)>.999) clipped=true; }
-            const yy=cy+2+(ch-4)/2;
-            g.moveTo(x+2+px,yy-mx*(ch-4)/2*.88);
-            g.lineTo(x+2+px,yy-mn*(ch-4)/2*.88);
+          const pk=peaksFor(data), pkStep=pk.step;
+          const rb0=Math.floor(i0/pkStep), rb1=Math.max(rb0+1,Math.ceil((i0+n)/pkStep));
+          for(let b=rb0;b<rb1;b++){ if(pk.ab[b]>.999){ clipped=true; break; } }
+          if(!st.lofi){ /* low-fidelity while dragging skips this; only the visible slice is drawn */
+            const vx0=Math.max(0,x+2), vx1=Math.min(W-1,x+w-2);
+            if(vx1>vx0){
+              const ta=Math.max(c.start,(S+vx0-MARGIN-2)/st.p), tb=Math.min(c.start+c.len,(S+vx1-MARGIN-2)/st.p);
+              if(tb>ta){
+                const cols=Math.max(2,Math.min(2400,Math.floor((tb-ta)*st.p)));
+                g.save(); g.beginPath(); g.rect(x,cy,Math.max(1,w),ch); g.clip();
+                g.strokeStyle='rgba(255,255,255,.72)'; g.lineWidth=1;
+                g.beginPath();
+                for(let px=0;px<cols;px++){
+                  const tA=ta+(tb-ta)*px/cols, tB=Math.max(tA,ta+(tb-ta)*(px+1)/cols);
+                  const a=i0+Math.floor((tA-c.start)*sr), b=Math.max(a+1,i0+Math.floor((tB-c.start)*sr));
+                  const cb0=Math.floor(a/pkStep), cb1=Math.max(cb0+1,Math.ceil(b/pkStep));
+                  let mn=1,mx=-1;
+                  for(let bi=cb0;bi<cb1;bi++){ const lo=pk.mn[bi]; if(lo<mn)mn=lo; const hi=pk.mx[bi]; if(hi>mx)mx=hi; }
+                  const xx=x+(tA-c.start)*st.p, yy=cy+2+(ch-4)/2;
+                  g.moveTo(xx,yy-mx*(ch-4)/2*.88);
+                  g.lineTo(xx,yy-mn*(ch-4)/2*.88);
+                }
+                g.stroke(); g.restore();
+              }
+            }
           }
-          g.stroke(); g.restore();
         }
       }
       g.font='700 11px system-ui, sans-serif'; g.fillStyle='rgba(0,0,0,.5)';
@@ -170,25 +193,21 @@ function stRenderContent(){
         rr(g,x+w-3,cy+ch/2-11,6,22,3); g.fill();
       }
     });
+    g.restore(); /* end lane clip region */
   });
+  /* playhead */
+  if(st.tracks.length){
+    const px=stX(st.playhead);
+    if(px>=-1&&px<=W+1){
+      g.strokeStyle='#38bdf8'; g.lineWidth=2;
+      g.beginPath(); g.moveTo(px,0); g.lineTo(px,H); g.stroke();
+      g.fillStyle='#38bdf8';
+      g.beginPath(); g.moveTo(px-6,0); g.lineTo(px+6,0); g.lineTo(px,9); g.closePath(); g.fill();
+    }
+  }
 }
 
-function stFrame(){
-  const cv=$('#tl'), wrap=$('#studio-scroll');
-  if(!cv||!wrap||!st.tracks.length) return;
-  const dpr=window.devicePixelRatio||1;
-  const W=st.content.width/dpr, H=st.content.height/dpr;
-  if(cv.width!==Math.round(W*dpr)||cv.height!==Math.round(H*dpr)){ cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr); }
-  cv.style.width=W+'px'; cv.style.height=H+'px';
-  const g=cv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0);
-  g.clearRect(0,0,W,H);
-  g.drawImage(st.content,0,0,st.content.width,st.content.height,0,0,W,H);
-  const px=stX(st.playhead);
-  g.strokeStyle='#38bdf8'; g.lineWidth=2;
-  g.beginPath(); g.moveTo(px,0); g.lineTo(px,H); g.stroke();
-  g.fillStyle='#38bdf8';
-  g.beginPath(); g.moveTo(px-6,0); g.lineTo(px+6,0); g.lineTo(px,9); g.closePath(); g.fill();
-}
+function stFrame(){ stRenderContent(); }
 
 function stTimeUI(){
   const el=$('#stTime'); if(el) el.innerHTML=`<b>${fmtTime(st.playhead)}</b> / ${fmtTime(stTotal())}`;
@@ -247,7 +266,7 @@ async function stPlay(){
     if(!st.drag){
       const wrap=$('#studio-scroll');
       if(wrap){
-        const px=stX(st.playhead);
+        const px=stCX(st.playhead); /* content-space x */
         if(px>wrap.scrollLeft+wrap.clientWidth-80) wrap.scrollLeft=px-wrap.clientWidth+80;
         if(px<wrap.scrollLeft+MARGIN) wrap.scrollLeft=Math.max(0,px-MARGIN-10);
       }
@@ -264,10 +283,10 @@ function stStopSources(){
 }
 st.zoom=f=>{
   const wrap=$('#studio-scroll'); if(!wrap) return;
-  const before=stT(wrap.scrollLeft+wrap.clientWidth/2);
+  const before=stT(wrap.clientWidth/2); /* time at viewport center */
   st.p=clamp(st.p*f,8,400);
-  stDirty();
   wrap.scrollLeft=MARGIN+before*st.p-wrap.clientWidth/2;
+  stDirty();
 };
 
 /* ---- pointer interaction (incl. pinch zoom) ---- */
@@ -310,7 +329,7 @@ function stBindPointer(cv){
       const L0=cv.getBoundingClientRect().left;
       const sl0=wEl?wEl.scrollLeft:0, st0=wEl?wEl.scrollTop:0;
       const mx0=(A.cx+B.cx)/2, my0=(A.cy+B.cy)/2;
-      const t0=(mx0-L0-MARGIN)/st.p;
+      const t0=(mx0-L0+sl0-MARGIN)/st.p;
       st.drag={m:'pinch',d0:dist(),p0:st.p,L0,sl0,st0,mx0,my0,t0};
       return;
     }
@@ -328,12 +347,14 @@ function stBindPointer(cv){
       stSelect(h.ti,h.ci);
       if(!h.c||st.tracks[h.ti].lock) return;
       st.drag={m:'move',c:h.c,t:h.ti,x0:x,start0:h.c.start,moved:false};
+      st.lofi=true; stDirty();
       return;
     }
     if(h.m==='tl'||h.m==='tr'){
       stSelect(h.ti,h.ci);
       if(st.tracks[h.ti].lock) return;
       st.drag={m:h.m,c:h.c,ti:h.ti,x0:x,len0:h.c.len,start0:h.c.start,off0:h.c.offset,moved:false};
+      st.lofi=true; stDirty();
       return;
     }
     if(h.m==='empty'){
@@ -353,7 +374,7 @@ function stBindPointer(cv){
         const [A,B]=[...st.pointers.values()];
         const mx=(A.cx+B.cx)/2, my=(A.cy+B.cy)/2;
         st.p=clamp(st.drag.p0*d/Math.max(1,st.drag.d0),8,400);
-        wrap.scrollLeft=st.drag.L0+st.drag.sl0+MARGIN+st.drag.t0*st.p-mx;
+        wrap.scrollLeft=st.drag.L0+MARGIN+st.drag.t0*st.p-mx;
         wrap.scrollTop=st.drag.st0-(my-st.drag.my0);
         stDirty();
       }
@@ -409,6 +430,7 @@ function stBindPointer(cv){
       if(st.drag.m==='pinch'){ if(st.pointers.size<2) st.drag=null; return; }
       if(st.drag.moved&&st.drag.m!=='pan') stSnapshot();
       st.drag=null;
+      if(st.lofi){ st.lofi=false; stDirty(); } /* restore full-quality waveforms */
     }
   };
   cv.addEventListener('pointerup',up);
@@ -743,7 +765,7 @@ function renderStudio(){
         <div style="font-size:14px;max-width:400px">Add one or more audio files to start layering, splitting, trimming and mixing. Drag files in, or use Add audio.</div>
         <button class="btn primary" id="stEmptyAdd">${IC.upload} Add Audio</button>
       </div>
-      <canvas id="tl" style="display:none"></canvas>
+      <div id="stSpacer" style="position:relative;width:0;height:0"><canvas id="tl" style="display:none;position:sticky;left:0;top:0"></canvas></div>
     </div>
     <div class="studio-bar">
       <div class="time-label" id="stTime" title="Tap to jump to a time" style="cursor:pointer"><b>00:00</b> / 00:00</div>
@@ -777,6 +799,8 @@ function renderStudio(){
   ['dragenter','dragover'].forEach(ev=>wrap.addEventListener(ev,e=>{e.preventDefault();wrap.style.outline='2px dashed rgba(34,211,238,.6)';}));
   ['dragleave','drop'].forEach(ev=>wrap.addEventListener(ev,e=>{e.preventDefault();wrap.style.outline='none';}));
   wrap.addEventListener('drop',e=>stAddFiles(Array.from(e.dataTransfer.files||[])));
+  let scrRaf=0;
+  wrap.addEventListener('scroll',()=>{ if(scrRaf) return; scrRaf=requestAnimationFrame(()=>{ scrRaf=0; if(st.tracks.length) stFrame(); }); },{passive:true});
   $('#stPlayBtn').onclick=stPlay;
   $('#stSeek0').onclick=()=>{ st.playhead=0; stDirty(); };
   $('#stZoomIn').onclick=()=>st.zoom(1.45);

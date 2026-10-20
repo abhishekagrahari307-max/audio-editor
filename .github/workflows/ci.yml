@@ -1,0 +1,96 @@
+name: Build · Test · Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Rebuild & syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Rebuild index.html from src
+        run: bash build.sh
+      - name: Syntax-check inline scripts
+        run: |
+          node -e 'const fs=require("fs");const h=fs.readFileSync("index.html","utf8");const re=/<script>([\s\S]*?)<\/script>/g;let m,i=0;while((m=re.exec(h))){i++;fs.writeFileSync("/tmp/chunk"+i+".js",m[1]);}if(!i)throw new Error("no inline scripts found");'
+          for f in /tmp/chunk*.js; do node --check "$f" || { echo "SYNTAX FAIL: $f"; exit 1; }; done
+          echo "All inline scripts pass node --check"
+      - name: Verify index.html matches committed build
+        run: |
+          if git diff --quiet -- index.html; then
+            echo "index.html is in sync with src build"
+          else
+            echo "::warning::index.html differs from a fresh src build — deploy will use the fresh build"
+          fi
+      - name: Upload site artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: index.html
+
+  qa:
+    name: Browser QA (Playwright)
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Download built site
+        uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: site
+      - name: Serve site on :8080
+        run: |
+          (cd site && python3 -m http.server 8080 --bind 127.0.0.1 >/dev/null 2>&1 &)
+          sleep 2
+          curl -sf http://127.0.0.1:8080/ >/dev/null && echo "site serving OK"
+      - name: Install Playwright + Chromium
+        run: |
+          npm init -y >/dev/null
+          npm i playwright --no-fund --no-audit
+          npx playwright install --with-deps chromium
+      - name: Run QA suite
+        run: node qa.js
+        env:
+          CI: 1
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: qa
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/configure-pages@v5
+      - name: Download built site
+        uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: site
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

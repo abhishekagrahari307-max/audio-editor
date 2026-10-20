@@ -2,7 +2,7 @@
 'use strict';
 /* ================= HOME ================= */
 function toolCard(t){
-  return `<div class="tool${t.pro?' locked':''}" data-go="${t.go}"${t.pro?' data-pro="1"':''}
+  return `<div class="tool${t.pro?' locked':''}" data-go="${t.go||t.id}"${t.pro?' data-pro="1"':''}
     style="--c1:${t.c[0]};--c2:${t.c[1]};--ic:${t.icc}" role="button" tabindex="0" aria-label="${esc(t.nm)}">
     ${t.crown?`<span class="crown">${IC.crown}</span>`:''}
     ${t.ai?`<span class="ai-tag">AI</span>`:''}
@@ -118,7 +118,7 @@ function buildMenu(){
     {go:'studio',nm:'Multi-track Studio',ic:'layers'},
     {go:'outputs',nm:'Outputs',ic:'folder'},
     {sep:1},
-    ...TOOLS.map(t=>({go:t.go,nm:t.nm,ic:t.ic,pro:t.pro})),
+    ...TOOLS.map(t=>({go:t.go||t.id,nm:t.nm,ic:t.ic,pro:t.pro})),
   ];
   m.innerHTML=items.map(it=>it.sep?'<div class="sep"></div>':`<button data-go="${it.go}"${it.pro?' data-pro="1"':''}>${IC[it.ic]}<span>${esc(it.nm)}</span></button>`).join('');
 }
@@ -132,7 +132,7 @@ const routes={
   home:renderHome, studio:renderStudio, trim:renderTrim, merge:renderMerge, mix:renderMix,
   split:renderSplit, insert:renderInsert, boost:renderBoost, ringtone:renderRingtone,
   v2a:renderV2A, a2v:renderA2V, denoise:renderDenoise, voice:renderVoice, rec:renderRec,
-  comp:renderComp, outputs:renderOutputs,
+  comp:renderComp, fx:renderFx, batch:renderBatch, viz:renderViz, outputs:renderOutputs,
 };
 const current=()=>{
   const h=location.hash.replace(/^#/,'');
@@ -182,6 +182,14 @@ document.addEventListener('keydown',e=>{
   if((e.ctrlKey||e.metaKey)&&(e.key==='y'||e.key==='Y')){
     if(current()==='studio'){ e.preventDefault(); stRedo(); }
   }
+  /* studio: +/− zoom, Delete/Backspace remove clip, Home/End playhead jump */
+  if(current()==='studio'&&!/INPUT|TEXTAREA|SELECT|BUTTON/.test(tag)){
+    if(e.key==='+'||e.key==='='){ e.preventDefault(); st.zoom(1.45); }
+    else if(e.key==='-'){ e.preventDefault(); st.zoom(1/1.45); }
+    else if(e.key==='Delete'||e.key==='Backspace'){ e.preventDefault(); stDeleteClip(); }
+    else if(e.key==='Home'){ e.preventDefault(); st.playhead=0; stDirty(); }
+    else if(e.key==='End'){ e.preventDefault(); st.playhead=stTotal(); stDirty(); }
+  }
 });
 let rszT=0;
 window.addEventListener('resize',()=>{
@@ -205,6 +213,17 @@ $('#proBtn').onclick=()=>{
 };
 window.__pageStop=null;
 window.__pageRedraw=null;
+/* PWA: service worker + install prompt (skipped under file:// and QA) */
+(function(){
+  if(window.__QA) return;
+  if(!('serviceWorker' in navigator)) return;
+  if(location.protocol!=='https:'&&location.protocol!=='http:') return;
+  const ok=location.hostname==='localhost'||/github\.io$/.test(location.hostname);
+  if(!ok) return;
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('sw.js').catch(()=>{});
+  });
+})();
 route();
 </script>
 </body>

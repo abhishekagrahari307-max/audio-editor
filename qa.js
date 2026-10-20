@@ -4,6 +4,7 @@ const { chromium } = require('playwright');
   const errors = [];
   const browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required','--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream'] });
   const ctx = await browser.newContext({ acceptDownloads: true, viewport: { width: 1280, height: 900 } });
+  await ctx.addInitScript(() => { window.__QA = true; });
   const page = await ctx.newPage();
   page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
   page.on('pageerror', e => errors.push('pageerror: ' + e.message));
@@ -262,12 +263,170 @@ const { chromium } = require('playwright');
     await page.screenshot({ path: 'shot_outputs.png' });
   });
 
+  await step('fx: 2-effect chain + export', async () => {
+    await page.goto(base + '#fx');
+    await page.waitForSelector('#dz input', { state: 'attached' });
+    await page.setInputFiles('#dz input', [T + 'a.wav']);
+    await page.waitForTimeout(500);
+    if (!(await page.locator('#work').isVisible())) throw new Error('fx work panel not shown');
+    // enable EQ + bass boost
+    await page.click('[data-sw="eq"]');
+    await page.click('[data-sw="bass"]');
+    await page.waitForTimeout(150);
+    const rows = await page.locator('.fx-eff.on').count();
+    if (rows !== 2) throw new Error('enabled fx rows=' + rows);
+    // tweak EQ band 2 (+6 dB) and bass (+10)
+    const eqSlider = page.locator('#chain [data-b="2"]');
+    await eqSlider.evaluate(el => { el.value = 6; el.dispatchEvent(new Event('input', { bubbles: true })); });
+    const bassSlider = page.locator('#chain [data-k="amt"]');
+    await bassSlider.evaluate(el => { el.value = 10; el.dispatchEvent(new Event('input', { bubbles: true })); });
+    await page.click('#run');
+    await page.waitForTimeout(2500);
+    const proc = await page.evaluate(() => (window.__fxProc || {}).duration || 0);
+    if (proc < 3.5) throw new Error('fx render duration=' + proc);
+    await page.screenshot({ path: 'shot_fx.png' });
+    await page.click('#exM');
+    await page.waitForTimeout(1500);
+    if (!downloads.some(d => d.includes('-fx'))) throw new Error('fx mp3 not downloaded');
+  });
+
+  await step('batch: two files -> zip', async () => {
+    await page.goto(base + '#batch');
+    await page.waitForSelector('#dz input', { state: 'attached' });
+    await page.setInputFiles('#dz input', [T + 'a.wav', T + 'b.wav']);
+    await page.waitForTimeout(600);
+    const rows = await page.locator('.batch-row').count();
+    if (rows !== 2) throw new Error('batch rows=' + rows);
+    // use WAV format (fast, no encoder)
+    await page.click('.batch-fmt [data-f="wav"]');
+    const n0 = downloads.length;
+    await page.click('#go');
+    await page.waitForTimeout(3500);
+    if (!downloads.slice(n0).some(d => d.startsWith('audio-batch') && d.endsWith('.zip'))) throw new Error('batch zip not downloaded');
+    const status = await page.textContent('#bst0').catch(() => '');
+    if (!/KB|MB|B/.test(status) && !/failed/.test(status)) throw new Error('batch status=' + status);
+    await page.screenshot({ path: 'shot_batch.png' });
+  });
+
+  await step('viz: load + play + meters', async () => {
+    await page.goto(base + '#viz');
+    await page.waitForSelector('#dz input', { state: 'attached' });
+    await page.setInputFiles('#dz input', [T + 'a.wav']);
+    await page.waitForTimeout(500);
+    if (!(await page.locator('#work').isVisible())) throw new Error('viz work panel not shown');
+    await page.click('#pp');
+    await page.waitForTimeout(900);
+    const vu = await page.textContent('#vu');
+    const pk = await page.textContent('#pk');
+    if (vu === '-∞ dB') throw new Error('RMS meter dead: ' + vu);
+    if (pk === '-∞ dB') throw new Error('peak meter dead: ' + pk);
+    const cl = await page.textContent('#cl');
+    if (!/clean|hot|CLIP/.test(cl)) throw new Error('clip flag=' + cl);
+    await page.screenshot({ path: 'shot_viz.png' });
+    await page.click('#pp'); // stop
+    await page.waitForTimeout(200);
+  });
+
+  await step('projects: save -> reload -> load -> delete', async () => {
+    await page.goto(base + '#studio');
+    await page.waitForSelector('#stFile', { state: 'attached' });
+    // clear any studio state left from earlier steps
+    await page.evaluate(() => { st.tracks.length = 0; st.buffers = {}; st.sel = null; st.playhead = 0; stDirty(); });
+    await page.setInputFiles('#stFile', [T + 'a.wav', T + 'b.wav']);
+    await page.waitForTimeout(400);
+    await page.click('#stProj');
+    await page.waitForSelector('#prjList');
+    await page.fill('#prjName', 'QA session');
+    await page.click('#prjSave');
+    await page.waitForTimeout(600);
+    const saved = await page.locator('#prjList [data-pl]').count();
+    if (saved < 1) throw new Error('project not saved');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+    // reload the page — IndexedDB must persist
+    await page.reload({ waitUntil: 'load' });
+    await page.goto(base + '#studio');
+    await page.waitForSelector('#stProj');
+    await page.click('#stProj');
+    await page.waitForSelector('#prjList [data-pl]');
+    await page.click('#prjList [data-pl]');
+    await page.waitForTimeout(500);
+    const tracks = await page.evaluate(() => st.tracks.length);
+    if (tracks !== 2) throw new Error('loaded tracks=' + tracks);
+    // delete it
+    await page.click('#stProj');
+    await page.waitForSelector('#prjList [data-pd]');
+    await page.click('#prjList [data-pd]');
+    await page.waitForTimeout(400);
+    const left = await page.locator('#prjList [data-pl]').count();
+    if (left !== 0) throw new Error('project delete failed: ' + left);
+    await page.keyboard.press('Escape');
+  });
+
+  await step('theme: light/dark toggle + persist', async () => {
+    await page.goto(base + '#home');
+    await page.waitForTimeout(250);
+    await page.click('#themeBtn');
+    await page.waitForTimeout(200);
+    const light = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
+    if (light !== 'light') throw new Error('light theme not applied: ' + light);
+    await page.screenshot({ path: 'shot_light.png', fullPage: true });
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForTimeout(300);
+    const kept = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
+    if (kept !== 'light') throw new Error('theme not persisted after reload: ' + kept);
+    await page.click('#themeBtn');
+    await page.waitForTimeout(150);
+    const dark = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
+    if (dark === 'light') throw new Error('switch back to dark failed');
+  });
+
+  await step('shortcuts: zoom / Delete / Home / End', async () => {
+    await page.goto(base + '#studio');
+    await page.waitForSelector('#stFile', { state: 'attached' });
+    await page.setInputFiles('#stFile', [T + 'a.wav']);
+    await page.waitForTimeout(400);
+    if (!(await page.locator('#tl').isVisible())) throw new Error('timeline not visible');
+    // drop focus from any leftover button/input (e.g. themeBtn) — app correctly ignores shortcuts while a control is focused
+    await page.click('.studio-title');
+    await page.evaluate(() => { const a = document.activeElement; if (a && a.tagName !== 'BODY') a.blur(); });
+    const p0 = await page.evaluate(() => st.p);
+    await page.keyboard.press('-');
+    await page.waitForTimeout(150);
+    const p1 = await page.evaluate(() => st.p);
+    if (Math.abs(p1 - p0 / 1.45) > 0.01) throw new Error('zoom out failed: ' + p0 + '->' + p1);
+    await page.keyboard.press('+');
+    await page.waitForTimeout(150);
+    const p2 = await page.evaluate(() => st.p);
+    if (Math.abs(p2 - p0) > 0.01) throw new Error('zoom back failed: ' + p2);
+    // select clip, press Delete
+    const box = await page.locator('#tl').boundingBox();
+    await page.mouse.click(box.x + 132 + 60, box.y + 78);
+    await page.waitForTimeout(150);
+    await page.keyboard.press('Delete');
+    await page.waitForTimeout(200);
+    const clips = await page.evaluate(() => st.tracks.reduce((n, t) => n + t.clips.length, 0));
+    if (clips !== 0) throw new Error('delete shortcut failed: clips=' + clips);
+    // re-add file, Home/End
+    await page.setInputFiles('#stFile', [T + 'a.wav']);
+    await page.waitForTimeout(400);
+    await page.keyboard.press('End');
+    await page.waitForTimeout(150);
+    const e1 = await page.evaluate(() => ({ ph: st.playhead, tot: stTotal() }));
+    if (e1.tot > 0 && Math.abs(e1.ph - e1.tot) > 0.01) throw new Error('End failed: ' + JSON.stringify(e1));
+    await page.keyboard.press('Home');
+    await page.waitForTimeout(150);
+    const ph0 = await page.evaluate(() => st.playhead);
+    if (ph0 !== 0) throw new Error('Home failed: ' + ph0);
+  });
+
   await step('mobile touch: pan + auto-follow', async () => {
     const tctx = await browser.newContext({
       acceptDownloads: true, viewport: { width: 390, height: 844 },
       hasTouch: true, isMobile: true,
       userAgent: 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36',
     });
+    await tctx.addInitScript(() => { window.__QA = true; });
     const tp = await tctx.newPage();
     tp.on('pageerror', e => errors.push('pageerror(touch): ' + e.message));
     await tp.goto(base + '#studio');

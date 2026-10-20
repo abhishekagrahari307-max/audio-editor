@@ -605,6 +605,83 @@ function stJumpPop(anchor){
    });
 }
 
+/* ---- projects: save/load full sessions in IndexedDB ---- */
+function stProjectsModal(){
+  openModal(`
+    <h3>Projects</h3>
+    <p class="muted">Save your whole session — every track, clip and setting — in this browser. Files never leave your device.</p>
+    <div class="row" style="margin:14px 0">
+      <input class="inp" id="prjName" placeholder="Project name" style="flex:1">
+      <button class="btn primary" id="prjSave">${IC.save} Save current</button>
+    </div>
+    <div id="prjList"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn ghost" id="prjClose">Close</button></div>
+  `);
+  $('#prjClose').onclick=closeModal;
+  $('#prjSave').onclick=async()=>{
+    if(!st.tracks.length) return toast('Nothing to save yet');
+    const nm=$('#prjName').value.trim()||('Project '+new Date().toLocaleString());
+    await stSaveProject(nm);
+    $('#prjName').value='';
+    stProjDraw();
+  };
+  stProjDraw();
+}
+async function stSaveProject(nm){
+  const id='proj:'+Date.now().toString(36);
+  const payload={
+    id, name:nm, savedAt:Date.now(),
+    nTracks:st.tracks.length,
+    nClips:st.tracks.reduce((n,t)=>n+t.clips.length,0),
+    tracks:st.tracks.map(t=>({id:t.id,name:t.name,color:t.color,muted:t.muted,solo:t.solo,lock:t.lock,
+      clips:t.clips.map(c=>({id:c.id,bufId:c.bufId,start:c.start,offset:c.offset,len:c.len,gain:c.gain,fi:c.fi,fo:c.fo,fc:c.fc,muted:c.muted,speed:c.speed}))})),
+    buffers:{}
+  };
+  for(const [bid,ab] of Object.entries(st.buffers)){
+    payload.buffers[bid]={ch:ab.numberOfChannels,sr:ab.sampleRate,len:ab.length,data:[]};
+    for(let c=0;c<ab.numberOfChannels;c++) payload.buffers[bid].data.push(ab.getChannelData(c).slice());
+  }
+  await dbPut(id,payload);
+  toast('Project saved in this browser');
+}
+async function stProjDraw(){
+  const box=$('#prjList'); if(!box) return;
+  const keys=await dbKeys('proj:');
+  const items=[];
+  for(const k of keys){ const p=await dbGet(k); if(p) items.push(p); }
+  items.sort((a,b)=>b.savedAt-a.savedAt);
+  box.innerHTML=items.length?items.map(p=>`
+    <div class="file-row" style="border-color:var(--line)">
+      <div class="file-ic">${IC.layers}</div>
+      <div class="file-meta"><div class="fm-n">${esc(p.name)}</div>
+      <div class="fm-s">${p.nTracks} track${p.nTracks>1?'s':''} · ${p.nClips} clip${p.nClips>1?'s':''} · ${new Date(p.savedAt).toLocaleString()}</div></div>
+      <button class="btn small" data-pl="${p.id}">Load</button>
+      <button class="btn ghost small" data-pd="${p.id}">${IC.trash}</button>
+    </div>`).join('')
+   :'<div class="muted" style="font-size:13px">No saved projects yet.</div>';
+  $$('#prjList [data-pl]').forEach(b=>b.onclick=async()=>{
+    const p=await dbGet(b.dataset.pl);
+    if(!p) return toast('Project not found');
+    if(st.playing) stPause();
+    stStopSources();
+    st.buffers={};
+    for(const [bid,bb] of Object.entries(p.buffers)){
+      const ab=AC().createBuffer(bb.ch,bb.len,bb.sr);
+      for(let c=0;c<bb.ch;c++) ab.getChannelData(c).set(bb.data[c]);
+      st.buffers[bid]=ab;
+    }
+    st.tracks=p.tracks.map(t=>Object.assign({},t,{clips:t.clips.map(c=>Object.assign({},c))}));
+    st.sel=null; st.playhead=0;
+    st.history=[]; st.histIdx=-1; stSnapshot();
+    stDirty();
+    closeModal();
+    toast('Project loaded');
+  });
+  $$('#prjList [data-pd]').forEach(b=>b.onclick=async()=>{
+    await dbDel(b.dataset.pd); stProjDraw(); toast('Project deleted');
+  });
+}
+
 function stExportOpen(){
   if(!st.tracks.length) return toast('Add some audio first');
   openModal(`
@@ -657,6 +734,7 @@ function renderStudio(){
       <button class="btn ghost small" id="stZoomIn" title="Zoom in">${IC.zin}</button>
       <button class="btn ghost small" id="stAddTop">${IC.plus} Add audio</button>
       <button class="btn primary small" id="stSave">${IC.save} Save</button>
+      <button class="btn ghost small" id="stProj" title="Save / load projects in this browser">${IC.folder} Projects</button>
     </div>
     <div class="studio-scroll" id="studio-scroll">
       <div class="empty-studio" id="stEmpty">
@@ -687,7 +765,7 @@ function renderStudio(){
       <button class="tool-btn" id="stRev">${IC.rev} Reverse</button>
       <button class="tool-btn" id="stDelT">${IC.x} Del Track</button>
     </div>
-    <p class="dim mt" style="font-size:12.5px">Tip: M/S/lock on each track · drag clips to move (snaps to grid & playhead) · drag edges to trim · tap ruler to seek · pinch or +/− to zoom · space = play · Ctrl+Z = undo. Red “!” = clipping.</p>
+    <p class="dim mt" style="font-size:12.5px">Tip: M/S/lock on each track · drag clips to move (snaps to grid & playhead) · drag edges to trim · tap ruler to seek · pinch or +/− to zoom · space = play · Del = delete clip · Home/End = jump · Ctrl+Z = undo. Red “!” = clipping.</p>
   </div>
   <input type="file" id="stFile" multiple accept="audio/*" style="display:none">`;
   const inp=$('#stFile');
@@ -707,6 +785,7 @@ function renderStudio(){
   $('#stUndo').onclick=stUndo;
   $('#stRedo').onclick=stRedo;
   $('#stSave').onclick=stExportOpen;
+  $('#stProj').onclick=stProjectsModal;
   $('#stTime').onclick=e=>stJumpPop(e.currentTarget);
   $('#stSplit').onclick=stSplitAt;
   $('#stTrim').onclick=e=>{

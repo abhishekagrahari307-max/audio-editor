@@ -4,6 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0a1130">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="description" content="Audio Editor — free in-browser audio toolkit: trim, merge, mix, split, multi-track editing, noise removal, video to MP3 and more. 100% private, files never leave your device.">
 <title>Audio Editor — Free In-Browser Audio Toolkit</title>
 <style>
@@ -14,6 +20,25 @@
   --amber:#fbbf24; --orange:#f97316; --pink:#e879f9; --red:#fb7185; --purple:#a78bfa;
   --rad:16px; --shadow:0 18px 40px rgba(2,6,24,.45);
 }
+:root[data-theme="light"]{
+  --bg:#eef1fb; --panel:rgba(255,255,255,.82); --line:rgba(30,41,90,.13); --line2:rgba(30,41,90,.26);
+  --text:#131a3d; --muted:#48527a; --dim:#7d88ad;
+  --cyan:#0891b2; --blue:#2563eb; --indigo:#4f46e5; --green:#059669;
+  --amber:#d97706; --orange:#ea580c; --pink:#c026d3; --red:#e11d48; --purple:#7c3aed;
+  --shadow:0 18px 40px rgba(30,41,90,.14);
+}
+:root[data-theme="light"] body{background:
+  radial-gradient(700px 420px at 85% -5%,rgba(59,130,246,.14),transparent 60%),
+  radial-gradient(600px 400px at -10% 30%,rgba(192,38,211,.10),transparent 60%),var(--bg)}
+:root[data-theme="light"] .header{background:rgba(255,255,255,.85)}
+:root[data-theme="light"] .bnav{background:rgba(255,255,255,.9)}
+:root[data-theme="light"] .studio-scroll{background:#f6f8ff}
+:root[data-theme="light"] .toast{background:#fff}
+:root[data-theme="light"] .enc-hud{background:rgba(255,255,255,.95)}
+:root[data-theme="light"] .tool::before{background:radial-gradient(140px 90px at 50% 0%,rgba(255,255,255,.65),transparent 70%)}
+:root[data-theme="light"] .hero-badge{color:#0b6e8f;background:rgba(8,145,178,.12);border-color:rgba(8,145,178,.35)}
+:root[data-theme="light"] .hero-badge svg{color:#0891b2}
+:root[data-theme="light"] .tool .t-ds{color:rgba(226,232,255,.62)}
 *{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
 body{
@@ -107,7 +132,7 @@ h2.sec-title svg{width:22px;height:22px;color:var(--cyan)}
 .tool .t-ic{width:52px;height:52px;border-radius:14px;display:grid;place-items:center;color:var(--ic);
   background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.1);box-shadow:0 6px 16px rgba(0,0,0,.25)}
 .tool .t-ic svg{width:26px;height:26px}
-.tool .t-nm{font-weight:800;font-size:15.5px;text-align:center;line-height:1.25;position:relative}
+.tool .t-nm{font-weight:800;font-size:15.5px;color:#fff;text-shadow:0 1px 8px rgba(2,6,24,.55);text-align:center;line-height:1.25;position:relative}
 .tool .t-ds{font-size:11.5px;color:rgba(224,231,255,.55);text-align:center;line-height:1.35;position:relative}
 .tool .crown{position:absolute;top:10px;right:10px;width:24px;height:24px;border-radius:8px;display:grid;place-items:center;
   background:rgba(251,191,36,.16);color:#fcd34d;border:1px solid rgba(251,191,36,.35)}
@@ -252,6 +277,55 @@ footer{border-top:1px solid var(--line);margin-top:54px;padding:22px 0 8px;color
 .enc-hud .enc-txt{font-size:12.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .enc-hud .enc-track{flex:1;height:6px;border-radius:99px;background:rgba(148,163,255,.15);overflow:hidden;min-width:54px}
 .enc-hud .enc-track i{display:block;height:100%;width:0%;border-radius:99px;background:linear-gradient(90deg,#22d3ee,#3b82f6);transition:width .1s linear}
+
+/* ---------- theme toggle ---------- */
+.theme-btn{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;flex:none;
+  background:rgba(148,163,255,.08);border:1px solid var(--line2);color:var(--muted);cursor:pointer;transition:.15s}
+.theme-btn:hover{color:var(--text);background:rgba(148,163,255,.16)}
+.theme-btn svg{width:19px;height:19px}
+
+/* ---------- FX rack (effects chain) ---------- */
+.fx-eff{border:1px solid var(--line);border-radius:14px;background:rgba(148,163,255,.03);overflow:hidden;margin-top:10px}
+.fx-eff-h{display:flex;align-items:center;gap:10px;padding:11px 13px;cursor:pointer}
+.fx-eff-h:active{background:rgba(148,163,255,.05)}
+.fx-eff-h .fx-ic{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;flex:none;
+  background:rgba(148,163,255,.09);color:var(--muted)}
+.fx-eff-h .fx-ic svg{width:17px;height:17px}
+.fx-eff.on .fx-ic{background:linear-gradient(135deg,rgba(99,102,241,.35),rgba(59,130,246,.35));color:var(--cyan)}
+.fx-eff-h .fx-nm{font-weight:800;font-size:14px;flex:1}
+.fx-eff-h .fx-st{font-size:11px;font-weight:700;color:var(--dim)}
+.fx-eff.on .fx-st{color:var(--green)}
+.fx-sw{position:relative;width:40px;height:23px;border-radius:99px;background:rgba(148,163,255,.15);flex:none;transition:.18s}
+.fx-sw i{position:absolute;top:3px;left:3px;width:17px;height:17px;border-radius:50%;background:#8f9cc6;transition:.18s}
+.fx-eff.on .fx-sw{background:linear-gradient(90deg,var(--indigo),var(--blue))}
+.fx-eff.on .fx-sw i{left:20px;background:#fff}
+.fx-eff-b{display:none;padding:2px 13px 14px;border-top:1px solid var(--line)}
+.fx-eff.open .fx-eff-b{display:block}
+.fx-params{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px;margin-top:6px}
+@media(max-width:430px){.fx-params{grid-template-columns:1fr}}
+.fx-band{display:grid;grid-template-columns:44px 1fr;align-items:center;gap:10px}
+.fx-band .fx-bv{font-size:11.5px;font-weight:800;color:var(--cyan);text-align:right;font-variant-numeric:tabular-nums}
+.fx-order{display:flex;align-items:center;gap:5px;color:var(--dim);font-size:18px;font-weight:800;padding:4px 0;user-select:none}
+.fx-order button{width:26px;height:26px;border-radius:8px;border:1px solid var(--line);background:rgba(148,163,255,.06);color:var(--muted);cursor:pointer;font-size:13px}
+.fx-order button:active{transform:scale(.94)}
+
+/* ---------- visualizer ---------- */
+.viz-wrap{border-radius:14px;background:#05081a;border:1px solid var(--line);overflow:hidden}
+.viz-wrap canvas{display:block;width:100%}
+.viz-meters{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+.viz-meter{border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:rgba(148,163,255,.03)}
+.viz-meter .vm-l{font-size:11px;font-weight:700;color:var(--dim);letter-spacing:.4px}
+.viz-meter .vm-v{font-size:20px;font-weight:800;font-variant-numeric:tabular-nums;margin-top:2px}
+.viz-meter .vm-v.clip{color:var(--red)}
+
+/* ---------- batch converter ---------- */
+.batch-row{display:flex;align-items:center;gap:11px;padding:11px;border:1px solid var(--line);border-radius:12px;background:rgba(148,163,255,.03);margin-top:8px}
+.batch-row .br-st{font-size:12px;font-weight:700;color:var(--dim);white-space:nowrap}
+.batch-row .br-st.done{color:var(--green)}
+.batch-row .br-st.work{color:var(--cyan)}
+.batch-row .br-bar{flex:1;height:5px;border-radius:99px;background:rgba(148,163,255,.12);overflow:hidden}
+.batch-row .br-bar i{display:block;height:100%;width:0%;background:linear-gradient(90deg,#22d3ee,#3b82f6);border-radius:99px}
+.batch-fmt{display:flex;gap:8px;flex-wrap:wrap}
 
 /* ---------- video preview ---------- */
 .av-wrap{border-radius:14px;overflow:hidden;border:1px solid var(--line);background:#000;aspect-ratio:16/9}

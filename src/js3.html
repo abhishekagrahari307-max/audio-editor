@@ -1114,4 +1114,517 @@ function renderComp(){
   $('#exM').onclick=()=>{ if(S.proc) exportBuffer(S.proc,safeName(S.name)+'-compressed','mp3'); else toast('Compress first'); };
   window.__pageRedraw=()=>draw();
 }
+
+/* ================= effects rack (12 chainable real DSP effects) ================= */
+const FFX=[
+  {id:'eq',      nm:'8-Band EQ',      ic:'eq',      ds:'Shape the tone'},
+  {id:'bass',    nm:'Bass Boost',     ic:'volume',  ds:'Thicker low end'},
+  {id:'reverb',  nm:'Reverb',         ic:'ai',      ds:'Room / hall space'},
+  {id:'echo',    nm:'Echo',           ic:'clock',   ds:'Bouncing delay'},
+  {id:'comp',    nm:'Compressor',     ic:'sliders', ds:'Even out dynamics'},
+  {id:'limiter', nm:'Limiter',        ic:'shield',  ds:'Peak protection'},
+  {id:'dist',    nm:'Distortion',     ic:'bolt',    ds:'Grit & drive'},
+  {id:'chorus',  nm:'Chorus',         ic:'music',   ds:'Layered width'},
+  {id:'phaser',  nm:'Phaser',         ic:'music',   ds:'Sweeping motion'},
+  {id:'trem',    nm:'Tremolo',        ic:'volume',  ds:'Pulsing level'},
+  {id:'widen',   nm:'Stereo Widen',   ic:'merge',   ds:'Wider image'},
+  {id:'norm',    nm:'Normalize',      ic:'check',   ds:'Set loudness target'},
+];
+function ffxDefaults(id){
+  switch(id){
+    case 'eq': return {b:[0,0,0,0,0,0,0,0]};
+    case 'bass': return {amt:6};
+    case 'reverb': return {wet:40};
+    case 'echo': return {wet:45};
+    case 'comp': return {thr:-24,ratio:4};
+    case 'limiter': return {thr:-6};
+    case 'dist': return {drive:8};
+    case 'chorus': return {depth:50};
+    case 'phaser': return {rate:.6};
+    case 'trem': return {rate:2.5};
+    case 'widen': return {amt:100};
+    case 'norm': return {tgt:-1};
+  }
+  return {};
+}
+function ffxBuild(off,id,inNode,P){
+  switch(id){
+    case 'eq':{
+      const freqs=[60,150,400,1000,2500,6000,12000,16000];
+      let node=inNode;
+      freqs.forEach((f,i)=>{
+        const b=off.createBiquadFilter();
+        b.type=i===0?'lowshelf':(i===7?'highshelf':'peaking');
+        b.frequency.value=f; b.Q.value=1; b.gain.value=P.b[i]||0;
+        node.connect(b); node=b;
+      });
+      return node;
+    }
+    case 'bass':{
+      const b=off.createBiquadFilter(); b.type='lowshelf'; b.frequency.value=110; b.Q.value=.8; b.gain.value=P.amt;
+      inNode.connect(b); return b;
+    }
+    case 'reverb':{
+      const conv=off.createConvolver(); conv.buffer=makeImpulse(off,2.2,2.4);
+      const wet=off.createGain(); wet.gain.value=P.wet/100;
+      const dry=off.createGain(); dry.gain.value=1-Math.min(.7,P.wet/100*.7);
+      const out=off.createGain();
+      inNode.connect(dry); dry.connect(out);
+      inNode.connect(conv); conv.connect(wet); wet.connect(out);
+      return out;
+    }
+    case 'echo':{
+      const dly=off.createDelay(1); dly.delayTime.value=.3;
+      const fb=off.createGain(); fb.gain.value=.4;
+      const wet=off.createGain(); wet.gain.value=P.wet/100;
+      const out=off.createGain();
+      inNode.connect(out); inNode.connect(dly); dly.connect(fb); fb.connect(dly); dly.connect(wet); wet.connect(out);
+      return out;
+    }
+    case 'comp':{
+      const c=off.createDynamicsCompressor(); c.threshold.value=P.thr; c.ratio.value=P.ratio; c.knee.value=6;
+      inNode.connect(c); return c;
+    }
+    case 'limiter':{
+      const c=off.createDynamicsCompressor(); c.threshold.value=P.thr; c.ratio.value=20; c.knee.value=0; c.attack.value=.002; c.release.value=.08;
+      inNode.connect(c); return c;
+    }
+    case 'dist':{
+      const sh=off.createWaveShaper(); sh.curve=shaperCurve(P.drive); sh.oversample='4x';
+      const lp=off.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=5200;
+      const pre=off.createGain(); pre.gain.value=Math.min(1,5/Math.max(2,P.drive));
+      inNode.connect(sh); sh.connect(lp); lp.connect(pre); return pre;
+    }
+    case 'chorus':{
+      const dly=off.createDelay(.05); dly.delayTime.value=.022;
+      const lfo=off.createOscillator(); lfo.frequency.value=.6;
+      const lg=off.createGain(); lg.gain.value=.011*(P.depth/100+.2);
+      lfo.connect(lg); lg.connect(dly.delayTime);
+      const wet=off.createGain(); wet.gain.value=.55;
+      const out=off.createGain();
+      inNode.connect(out); inNode.connect(dly); dly.connect(wet); wet.connect(out);
+      lfo.start(0); return out;
+    }
+    case 'phaser':{
+      const bp=off.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=900; bp.Q.value=5;
+      const lfo=off.createOscillator(); lfo.frequency.value=P.rate;
+      const lg=off.createGain(); lg.gain.value=650;
+      lfo.connect(lg); lg.connect(bp.frequency);
+      const wet=off.createGain(); wet.gain.value=.5;
+      const out=off.createGain();
+      inNode.connect(out); inNode.connect(bp); bp.connect(wet); wet.connect(out);
+      lfo.start(0); return out;
+    }
+    case 'trem':{
+      const g=off.createGain(); g.gain.value=.75;
+      const lfo=off.createOscillator(); lfo.frequency.value=P.rate;
+      const lg=off.createGain(); lg.gain.value=.25;
+      lfo.connect(lg); lg.connect(g.gain);
+      inNode.connect(g); lfo.start(0); return g;
+    }
+    case 'widen':{
+      const amt=P.amt/100;
+      const split=off.createChannelSplitter(2);
+      const Lg=off.createGain(); Lg.gain.value=.5;
+      const Rg=off.createGain(); Rg.gain.value=.5;
+      const Lsn=off.createGain(); Lsn.gain.value=-.5;
+      const Rsn=off.createGain(); Rsn.gain.value=.5;
+      const mid=off.createGain(); const side=off.createGain();
+      const midL=off.createGain(); midL.gain.value=1;
+      const sideL=off.createGain(); sideL.gain.value=amt;
+      const midR=off.createGain(); midR.gain.value=1;
+      const sideR=off.createGain(); sideR.gain.value=-amt;
+      const mer=off.createChannelMerger(2);
+      inNode.connect(split);
+      split.connect(Lg,0); Lg.connect(mid,0);
+      split.connect(Rg,1); Rg.connect(mid,0);
+      split.connect(Lsn,0); Lsn.connect(side,0);
+      split.connect(Rsn,1); Rsn.connect(side,0);
+      mid.connect(midL); midL.connect(mer,0);
+      side.connect(sideL); sideL.connect(mer,0);
+      mid.connect(midR); midR.connect(mer,1);
+      side.connect(sideR); sideR.connect(mer,1);
+      return mer;
+    }
+  }
+  return inNode;
+}
+function bufPeak(buf){
+  let m=0;
+  for(let c=0;c<buf.numberOfChannels;c++){
+    const d=buf.getChannelData(c);
+    for(let i=0;i<d.length;i+=4){ const v=Math.abs(d[i]); if(v>m)m=v; }
+  }
+  return m;
+}
+function upmixStereo(buf){
+  const out=AC().createBuffer(2,buf.length,buf.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let c=0;c<2;c++) out.getChannelData(c).set(d);
+  return out;
+}
+async function renderFxChain(buf,chain){
+  const active=chain.filter(f=>f.on);
+  const base=active.filter(f=>f.id!=='norm');
+  const nf=active.find(f=>f.id==='norm');
+  let src=buf, tail=.1;
+  if(base.some(f=>f.id==='reverb')) tail=2.3;
+  if(base.some(f=>f.id==='echo')) tail=Math.max(tail,1.3);
+  if(base.some(f=>f.id==='widen')&&buf.numberOfChannels<2) src=upmixStereo(buf);
+  const sr=src.sampleRate;
+  const off=new OfflineAudioContext(2,Math.ceil((src.duration+tail)*sr),sr);
+  const s=off.createBufferSource(); s.buffer=src;
+  let node=s;
+  for(const f of base) node=ffxBuild(off,f.id,node,f.P);
+  const safe=off.createDynamicsCompressor();
+  safe.threshold.value=-1; safe.ratio.value=20; safe.knee.value=0; safe.attack.value=.002; safe.release.value=.08;
+  node.connect(safe); safe.connect(off.destination);
+  s.start(0);
+  let rend=await off.startRendering();
+  if(nf){
+    /* second pass: exact peak of the fully-processed signal -> scale to target */
+    const peak=bufPeak(rend);
+    const tgt=Math.pow(10,nf.P.tgt/20);
+    const g=peak>1e-6?Math.min(20,tgt/peak):1;
+    if(g!==1){
+      const out=AC().createBuffer(rend.numberOfChannels,rend.length,rend.sampleRate);
+      for(let c=0;c<rend.numberOfChannels;c++){
+        const d=rend.getChannelData(c), o=out.getChannelData(c);
+        for(let i=0;i<d.length;i++) o[i]=d[i]*g;
+      }
+      rend=out;
+    }
+  }
+  return rend;
+}
+function renderFx(){
+  const S={buf:null,name:'',proc:null,chain:FFX.map(f=>({id:f.id,on:false,open:false,P:ffxDefaults(f.id)}))};
+  const bandNames=['60','150','400','1k','2.5k','6k','12k','16k'];
+  const paramHtml=fx=>{
+    const P=fx.P;
+    if(fx.id==='eq') return `<div class="fx-params" style="grid-template-columns:1fr">${
+      P.b.map((v,i)=>`<div class="fx-band"><span class="fx-bv">${bandNames[i]}</span><div style="display:flex;align-items:center;gap:8px"><input type="range" class="slider" data-b="${i}" min="-12" max="12" step="1" value="${v}"><span class="fx-bv" style="text-align:left" id="eqv${i}">${v>0?'+':''}${v} dB</span></div></div>`).join('')
+    }</div>`;
+    const row=(key,label,min,max,step,val,unit,fmt)=>`<div class="fx-band"><span class="fx-bv">${label}</span><div style="display:flex;align-items:center;gap:8px"><input type="range" class="slider" data-k="${key}" data-u="${unit}" min="${min}" max="${max}" step="${step}" value="${val}"><span class="fx-bv" style="text-align:left" id="pv_${fx.id}_${key}">${fmt?fmt(val):val+unit}</span></div></div>`;
+    switch(fx.id){
+      case 'bass': return `<div class="fx-params">${row('amt','Boost',0,18,1,P.amt,' dB',v=>v+' dB')}</div>`;
+      case 'reverb': return `<div class="fx-params">${row('wet','Wet',0,100,1,P.wet,'%')}</div>`;
+      case 'echo': return `<div class="fx-params">${row('wet','Wet',0,100,1,P.wet,'%')}</div>`;
+      case 'comp': return `<div class="fx-params">${row('thr','Thresh',-40,0,1,P.thr,' dB',v=>v+' dB')}${row('ratio','Ratio',2,20,.5,P.ratio,':1',v=>v+':1')}</div>`;
+      case 'limiter': return `<div class="fx-params">${row('thr','Thresh',-24,-3,1,P.thr,' dB',v=>v+' dB')}</div>`;
+      case 'dist': return `<div class="fx-params">${row('drive','Drive',1,30,1,P.drive,'×')}</div>`;
+      case 'chorus': return `<div class="fx-params">${row('depth','Depth',0,100,1,P.depth,'%')}</div>`;
+      case 'phaser': return `<div class="fx-params">${row('rate','Rate',.1,3,.1,P.rate,' Hz',v=>v+' Hz')}</div>`;
+      case 'trem': return `<div class="fx-params">${row('rate','Rate',.2,8,.1,P.rate,' Hz',v=>v+' Hz')}</div>`;
+      case 'widen': return `<div class="fx-params">${row('amt','Width',0,300,5,P.amt,'%')}</div>`;
+      case 'norm': return `<div class="fx-params">${row('tgt','Target',-6,0,1,P.tgt,' dB',v=>v+' dB')}</div>`;
+    }
+    return '';
+  };
+  page.innerHTML=toolPage('Effects Rack','Chain up to 12 real-time effects in any order. Toggle each effect, tweak its parameter, reorder with the arrows, then render and export. Everything runs locally.',
+   `<div class="panel">${dropHtml('Tap to choose an audio file','or drag & drop here')}</div>
+    <div class="panel mt" id="work" hidden>
+      <div class="row between">
+        <div class="file-row" style="flex:1;min-width:220px;border:0;padding:0;gap:10px"><div class="file-ic">${IC.sliders}</div><div class="file-meta"><div class="fm-n"><span id="fn"></span></div><div class="fm-s"><span id="fs"></span></div></div></div>
+        <button class="btn ghost small" id="chg">Change file</button>
+      </div>
+      <div class="mt" id="chain"></div>
+      <div class="row mt">
+        <button class="btn ghost" id="reset">Reset all</button>
+        <div class="spacer"></div>
+        <button class="btn primary" id="run">${IC.bolt} Render</button>
+      </div>
+      <div class="wave-wrap mt"><canvas id="wc"></canvas></div>
+      <div class="row mt">
+        <button class="btn ghost" id="pp">${IC.play} Preview</button>
+        <div class="spacer"></div>
+        <button class="btn ghost" id="exW">${IC.download} WAV</button>
+        <button class="btn primary" id="exM">${IC.download} MP3</button>
+      </div>
+    </div>`);
+  const cv=$('#wc');
+  function draw(){
+    if(S.proc) drawPeaks(cv,S.proc.getChannelData(0),{color:'#fbbf24'});
+    else if(S.buf) drawPeaks(cv,S.buf.getChannelData(0),{color:'#7d8fd6'});
+  }
+  function drawChain(){
+    const box=$('#chain');
+    box.innerHTML=S.chain.map((fx,i)=>{
+      const meta=FFX.find(f=>f.id===fx.id);
+      return `<div class="fx-eff${fx.on?' on':''}${fx.open?' open':''}" data-fx="${fx.id}">
+        <div class="fx-eff-h" data-h="${fx.id}">
+          <div class="fx-ic">${IC[meta.ic]}</div>
+          <div class="fx-nm">${meta.nm}<div style="font-size:11px;font-weight:600;color:var(--dim)">${meta.ds}</div></div>
+          <div class="fx-order">
+            <button data-up="${i}" title="Move up">↑</button>
+            <button data-dn="${i}" title="Move down">↓</button>
+          </div>
+          <div class="fx-sw" data-sw="${fx.id}"><i></i></div>
+        </div>
+        <div class="fx-eff-b">${fx.on?paramHtml(fx):''}</div>
+      </div>`;
+    }).join('');
+    $$('#chain [data-h]').forEach(h=>h.onclick=()=>{
+      const fx=S.chain.find(f=>f.id===h.dataset.h);
+      fx.open=!fx.open;
+      h.closest('.fx-eff').classList.toggle('open',fx.open);
+    });
+    $$('#chain [data-sw]').forEach(sw=>sw.onclick=()=>{
+      const fx=S.chain.find(f=>f.id===sw.dataset.sw);
+      fx.on=!fx.on;
+      drawChain();
+    });
+    $$('#chain [data-up]').forEach(b=>b.onclick=e=>{
+      e.stopPropagation();
+      const i=+b.dataset.up;
+      if(i>0){ [S.chain[i-1],S.chain[i]]=[S.chain[i],S.chain[i-1]]; drawChain(); }
+    });
+    $$('#chain [data-dn]').forEach(b=>b.onclick=e=>{
+      e.stopPropagation();
+      const i=+b.dataset.dn;
+      if(i<S.chain.length-1){ [S.chain[i+1],S.chain[i]]=[S.chain[i],S.chain[i+1]]; drawChain(); }
+    });
+    $$('#chain [data-b]').forEach(sl=>sl.oninput=()=>{
+      const fx=S.chain.find(f=>f.id==='eq');
+      fx.P.b[+sl.dataset.b]=+sl.value;
+      $('#eqv'+sl.dataset.b).textContent=(+sl.value>0?'+':'')+sl.value+' dB';
+      S.proc=null;
+    });
+    $$('#chain [data-k]').forEach(sl=>sl.oninput=()=>{
+      const fx=S.chain.find(f=>f.id===sl.closest('.fx-eff').dataset.fx);
+      fx.P[sl.dataset.k]=+sl.value;
+      const lbl=$('#pv_'+fx.id+'_'+sl.dataset.k);
+      if(lbl) lbl.textContent=sl.dataset.k==='ratio'?sl.value+':1':sl.value+sl.dataset.u;
+      S.proc=null;
+    });
+  }
+  async function load(f){
+    try{
+      const buf=await decodeFile(f);
+      S.buf=buf; S.name=f.name; S.proc=null;
+      $('#fn').textContent=f.name;
+      $('#fs').textContent=fmtTime(buf.duration);
+      $('#work').hidden=false;
+      drawChain();
+      requestAnimationFrame(()=>draw());
+    }catch(e){ toast("Couldn't decode "+f.name); }
+  }
+  attachDrop($('#dz'),fs=>load(fs[0]));
+  $('#chg').onclick=()=>{ const i=$('#dz input'); if(i) i.click(); };
+  $('#reset').onclick=()=>{ S.chain.forEach(fx=>{ fx.on=false; fx.P=ffxDefaults(fx.id); }); S.proc=null; drawChain(); draw(); };
+  $('#run').onclick=async()=>{
+    if(!S.buf) return;
+    if(!S.chain.some(f=>f.on)) return toast('Turn on at least one effect');
+    const btn=$('#run'); btn.disabled=true;
+    const orig=btn.innerHTML;
+    btn.innerHTML=IC.spinner+' Rendering…';
+    btn.querySelector('svg').classList.add('spin');
+    await sleep(30);
+    try{
+      S.proc=await renderFxChain(S.buf,S.chain);
+      window.__fxProc=S.proc;
+      toast('Effects rendered');
+      requestAnimationFrame(()=>draw());
+    }catch(e){ console.warn(e); toast('Render failed'); }
+    btn.disabled=false; btn.innerHTML=orig;
+  };
+  $('#pp').onclick=()=>{ if(S.proc) playBuf(S.proc,$('#pp')); else toast('Render the chain first'); };
+  $('#exW').onclick=()=>{ if(S.proc) exportBuffer(S.proc,safeName(S.name)+'-fx','wav'); else toast('Render the chain first'); };
+  $('#exM').onclick=()=>{ if(S.proc) exportBuffer(S.proc,safeName(S.name)+'-fx','mp3'); else toast('Render the chain first'); };
+  window.__pageRedraw=()=>draw();
+}
+
+/* ================= batch converter ================= */
+function renderBatch(){
+  const S={files:[],fmt:'mp3160'};
+  page.innerHTML=toolPage('Batch Converter','Drop any number of audio files at once. Each one is decoded and converted, then everything is packed into a single ZIP download. 100% local — nothing is uploaded.',
+   `<div class="panel">${dropHtml('Tap to choose audio files (multiple ok)','or drag & drop — 10+ at once')}</div>
+    <div class="panel mt" id="work" hidden>
+      <div class="batch-fmt">
+        <button class="chip on" data-f="mp3160">MP3 · 160 kbps</button>
+        <button class="chip" data-f="mp3320">MP3 · 320 kbps</button>
+        <button class="chip" data-f="wav">WAV (lossless)</button>
+      </div>
+      <div class="mt" id="list"></div>
+      <div class="row mt">
+        <button class="btn ghost" id="clear">${IC.trash} Clear</button>
+        <div class="spacer"></div>
+        <button class="btn primary" id="go">${IC.bolt} Convert all & ZIP</button>
+      </div>
+    </div>`);
+  function drawList(){
+    const list=$('#list');
+    list.innerHTML=S.files.map((f,i)=>`<div class="batch-row" id="br${i}">
+      <div class="out-ic mp3">${IC.music}</div>
+      <div class="file-meta"><div class="fm-n">${esc(f.name)}</div><div class="fm-s">${fmtTime(f.buf.duration)} · ${f.buf.numberOfChannels>1?'stereo':'mono'}</div></div>
+      <div class="br-bar"><i></i></div>
+      <span class="br-st" id="bst${i}">ready</span>
+    </div>`).join('');
+    $('#work').hidden=!S.files.length;
+  }
+  async function addFiles(fs){
+    for(const f of fs){
+      try{
+        const buf=await decodeFile(f);
+        S.files.push({name:f.name,buf});
+      }catch(e){ toast("Couldn't decode "+f.name); }
+    }
+    drawList();
+  }
+  attachDrop($('#dz'),fs=>addFiles(fs));
+  $$('.batch-fmt .chip').forEach(c=>c.onclick=()=>{
+    $$('.batch-fmt .chip').forEach(x=>x.classList.toggle('on',x===c));
+    S.fmt=c.dataset.f;
+  });
+  $('#clear').onclick=()=>{ S.files.length=0; drawList(); };
+  $('#go').onclick=async()=>{
+    if(!S.files.length) return;
+    const btn=$('#go'); btn.disabled=true;
+    const orig=btn.innerHTML;
+    btn.innerHTML=IC.spinner+' Converting…';
+    btn.querySelector('svg').classList.add('spin');
+    const out=[];
+    for(let i=0;i<S.files.length;i++){
+      const f=S.files[i];
+      const st=$('#bst'+i), bar=$('#br'+i+' .br-bar i');
+      if(!st) continue;
+      st.className='br-st work'; st.textContent='converting…';
+      let blob,ext;
+      try{
+        if(S.fmt.indexOf('mp3')===0){
+          blob=await mp3BlobAsync(f.buf,S.fmt==='mp3320'?320:160,p=>{ if(bar) bar.style.width=Math.round(p*100)+'%'; });
+          ext='mp3';
+        }else{ blob=wavBlob(f.buf); ext='wav'; if(bar) bar.style.width='100%'; }
+      }catch(e){
+        blob=null;
+      }
+      if(!blob){ st.className='br-st'; st.textContent='failed'; continue; }
+      const nm=safeName(f.name)+'.'+ext;
+      out.push({name:nm,blob});
+      recordOutput(nm,blob);
+      st.className='br-st done'; st.textContent=fmtSize(blob.size);
+    }
+    if(out.length){
+      const files=[];
+      for(const o of out) files.push({name:o.name,data:new Uint8Array(await o.blob.arrayBuffer())});
+      downloadOnly(zipBlob(files),'audio-batch-'+String(Date.now()).slice(-6)+'.zip');
+    }else toast('No files converted');
+    btn.disabled=false; btn.innerHTML=orig;
+  };
+}
+
+/* ================= live visualizer ================= */
+function renderViz(){
+  const S={buf:null,name:'',playing:false,src:null,analyser:null,raf:0};
+  page.innerHTML=toolPage('Visualizer','Load a file and press play — live oscilloscope, 64-band spectrum analyzer, RMS/peak meters with clip detection. Perfect for checking levels before you export.',
+   `<div class="panel">${dropHtml('Tap to choose an audio file','or drag & drop here')}</div>
+    <div class="panel mt" id="work" hidden>
+      <div class="row between">
+        <div class="file-row" style="flex:1;min-width:220px;border:0;padding:0;gap:10px"><div class="file-ic">${IC.wave}</div><div class="file-meta"><div class="fm-n"><span id="fn"></span></div><div class="fm-s"><span id="fs"></span></div></div></div>
+        <button class="btn primary" id="pp">${IC.play} Play</button>
+      </div>
+      <div class="viz-wrap mt">
+        <canvas id="osc" height="110"></canvas>
+        <canvas id="spec" height="140"></canvas>
+      </div>
+      <div class="viz-meters">
+        <div class="viz-meter"><div class="vm-l">LEVEL · RMS</div><div class="vm-v" id="vu">-∞ dB</div></div>
+        <div class="viz-meter"><div class="vm-l">PEAK</div><div class="vm-v" id="pk">-∞ dB</div></div>
+        <div class="viz-meter"><div class="vm-l">CLIPPING</div><div class="vm-v" id="cl">—</div></div>
+      </div>
+    </div>`);
+  const osc=$('#osc'), spec=$('#spec');
+  function sizeCanvases(){
+    const dpr=window.devicePixelRatio||1;
+    [osc,spec].forEach(c=>{
+      const w=c.clientWidth||c.parentElement.clientWidth, h=+c.getAttribute('height');
+      c.width=Math.round(w*dpr); c.height=Math.round(h*dpr);
+      c.style.height=h+'px';
+      c.getContext('2d').setTransform(dpr,0,0,dpr,0,0);
+    });
+  }
+  async function load(f){
+    try{
+      const buf=await decodeFile(f);
+      S.buf=buf; S.name=f.name;
+      $('#fn').textContent=f.name;
+      $('#fs').textContent=fmtTime(buf.duration);
+      $('#work').hidden=false;
+      requestAnimationFrame(sizeCanvases);
+      sizeCanvases();
+    }catch(e){ toast("Couldn't decode "+f.name); }
+  }
+  attachDrop($('#dz'),fs=>load(fs[0]));
+  function stopViz(){
+    if(S.src){ try{S.src.stop();}catch(e){} S.src=null; }
+    S.playing=false;
+    cancelAnimationFrame(S.raf);
+    const pp=$('#pp'); if(pp) pp.innerHTML=IC.play+' Play';
+    $('#vu').textContent='-∞ dB'; $('#pk').textContent='-∞ dB'; $('#cl').textContent='—';
+  }
+  window.__pageStop=stopViz;
+  const db=v=>v<=1e-5?'-∞':(20*Math.log10(v)).toFixed(1);
+  $('#pp').onclick=async()=>{
+    if(S.playing){ stopViz(); return; }
+    if(!S.buf) return toast('Load a file first');
+    const c=AC(); if(c.state==='suspended') await c.resume();
+    const s=c.createBufferSource(); s.buffer=S.buf;
+    S.analyser=c.createAnalyser(); S.analyser.fftSize=2048; S.analyser.smoothingTimeConstant=.82;
+    const g=c.createGain(); g.gain.value=.95;
+    s.connect(S.analyser); S.analyser.connect(g); g.connect(c.destination);
+    s.onended=()=>{ if(S.src===s) stopViz(); };
+    s.start();
+    S.src=s; S.playing=true;
+    sizeCanvases();
+    $('#pp').innerHTML=IC.pause+' Stop';
+    vizLoop();
+  };
+  function vizLoop(){
+    if(!S.playing) return;
+    const an=S.analyser;
+    const tD=new Float32Array(an.fftSize);
+    an.getFloatTimeDomainData(tD);
+    // oscilloscope
+    const octx=osc.getContext('2d');
+    const ow=osc.clientWidth||osc.width, oh=+osc.getAttribute('height');
+    octx.clearRect(0,0,ow,oh);
+    octx.strokeStyle='rgba(34,211,238,.9)'; octx.lineWidth=1.8;
+    octx.beginPath();
+    for(let i=0;i<ow;i++){
+      const v=tD[Math.floor(i/ow*tD.length)];
+      const y=oh/2 - v*oh*.46;
+      i?octx.lineTo(i,y):octx.moveTo(i,y);
+    }
+    octx.stroke();
+    // spectrum (64 log-spaced bands)
+    const fD=new Uint8Array(an.frequencyBinCount);
+    an.getByteFrequencyData(fD);
+    const sctx=spec.getContext('2d');
+    const sw=spec.clientWidth||spec.width, sh=+spec.getAttribute('height');
+    sctx.clearRect(0,0,sw,sh);
+    const bars=64, bw=sw/bars;
+    const nyq=(S.buf.sampleRate/2);
+    for(let i=0;i<bars;i++){
+      const f0=40*Math.pow(nyq/40,i/bars), f1=40*Math.pow(nyq/40,(i+1)/bars);
+      const i0=Math.max(1,Math.floor(f0/(nyq)*fD.length)), i1=Math.max(i0+1,Math.floor(f1/(nyq)*fD.length));
+      let mx=0;
+      for(let j=i0;j<i1;j++) if(fD[j]>mx) mx=fD[j];
+      const h=mx/255*(sh-8);
+      const t=i/bars;
+      sctx.fillStyle=`hsl(${190+t*110},85%,${45+t*20}%)`;
+      sctx.fillRect(i*bw+1,sh-h-2,Math.max(1,bw-2),h);
+    }
+    // meters
+    let sum=0,peak=0;
+    for(let i=0;i<tD.length;i++){ const v=tD[i]; sum+=v*v; const a=Math.abs(v); if(a>peak)peak=a; }
+    const rms=Math.sqrt(sum/tD.length);
+    const vu=$('#vu'), pk=$('#pk'), cl=$('#cl');
+    vu.textContent=db(rms)+' dB';
+    pk.textContent=db(peak)+' dB';
+    if(peak>.999){ cl.textContent='CLIP!'; cl.classList.add('clip'); }
+    else if(peak>.9){ cl.textContent='hot'; cl.classList.remove('clip'); }
+    else { cl.textContent='clean'; cl.classList.remove('clip'); }
+    S.raf=requestAnimationFrame(vizLoop);
+  }
+}
 </script>

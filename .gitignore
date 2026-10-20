@@ -1,0 +1,4 @@
+shot_*.png
+*.log
+.DS_Store
+node_modules/

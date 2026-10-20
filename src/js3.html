@@ -1,0 +1,811 @@
+<script>
+'use strict';
+/* ================= TRIM ================= */
+function renderTrim(){
+  const S={buf:null,name:'',a:0,b:0,mode:null,off:0,a0:0,b0:0};
+  page.innerHTML=toolPage('Trim','Cut out the exact part you need. Drag the blue handles to set start and end, preview, then export.',
+   `<div class="panel">${dropHtml('Tap to choose an audio file','or drag & drop here')}</div>
+    <div class="panel mt" id="work" hidden>
+      <div class="row between">
+        <div class="file-row" style="flex:1;min-width:230px;border:0;padding:0;gap:10px"><div class="file-ic">${IC.music}</div><div class="file-meta"><div class="fm-n"><span id="fn"></span></div><div class="fm-s"><span id="fs"></span></div></div></div>
+        <button class="btn ghost small" id="chg">Change file</button>
+      </div>
+      <div class="wave-wrap mt"><canvas id="wc"></canvas></div>
+      <div class="row between mt">
+        <span class="chip" id="ta">Start 00:00</span>
+        <span class="chip" id="tlen">Length 00:00</span>
+        <span class="chip" id="tb">End 00:00</span>
+      </div>
+      <div class="row mt">
+        <button class="btn ghost" id="pp">${IC.play} Preview</button>
+        <div class="spacer"></div>
+        <button class="btn ghost" id="exW">${IC.download} WAV</button>
+        <button class="btn primary" id="exM">${IC.download} MP3</button>
+      </div>
+    </div>`);
+  const work=$('#work'), cv=$('#wc');
+  function draw(){
+    if(!S.buf) return;
+    const dur=S.buf.duration;
+    drawPeaks(cv,S.buf.getChannelData(0),{sel0:S.a/dur,sel1:S.b/dur,mid:true});
+    $('#ta').textContent='Start '+fmtTime(S.a);
+    $('#tb').textContent='End '+fmtTime(S.b);
+    $('#tlen').textContent='Length '+fmtTime(S.b-S.a);
+  }
+  async function load(f){
+    try{
+      const buf=await decodeFile(f);
+      S.buf=buf; S.name=f.name; S.a=0; S.b=buf.duration;
+      $('#fn').textContent=f.name;
+      $('#fs').textContent=fmtTime(buf.duration)+' · '+(buf.numberOfChannels>1?'stereo':'mono')+' · '+(buf.sampleRate/1000)+' kHz';
+      work.hidden=false;
+      requestAnimationFrame(draw);
+    }catch(e){ toast("Couldn't decode "+f.name); }
+  }
+  attachDrop($('#dz'),fs=>load(fs[0]));
+  $('#chg').onclick=()=>{ const i=$('#dz input'); if(i) i.click(); };
+  cv.addEventListener('pointerdown',e=>{
+    if(!S.buf) return;
+    const r=cv.getBoundingClientRect(), f=(e.clientX-r.left)/r.width;
+    const fa=S.a/S.buf.duration, fb=S.b/S.buf.duration;
+    if(Math.abs(f-fa)<.02) S.mode='a';
+    else if(Math.abs(f-fb)<.02) S.mode='b';
+    else if(f>fa&&f<fb) S.mode='move';
+    else return;
+    S.off=f; S.a0=S.a; S.b0=S.b;
+    try{cv.setPointerCapture(e.pointerId);}catch(err){}
+    e.preventDefault();
+  });
+  cv.addEventListener('pointermove',e=>{
+    if(!S.buf) return;
+    const r=cv.getBoundingClientRect(), f=clamp((e.clientX-r.left)/r.width,0,1);
+    if(!S.mode){
+      const fa=S.a/S.buf.duration, fb=S.b/S.buf.duration;
+      cv.style.cursor=(Math.abs(f-fa)<.02||Math.abs(f-fb)<.02)?'ew-resize':(f>fa&&f<fb?'grab':'crosshair');
+      return;
+    }
+    const t=f*S.buf.duration, min=.1;
+    if(S.mode==='a') S.a=clamp(t,0,S.b-min);
+    else if(S.mode==='b') S.b=clamp(t,S.a+min,S.buf.duration);
+    else{
+      const d=(f-S.off)*S.buf.duration;
+      let na=S.a0+d, nb=S.b0+d;
+      if(na<0){ nb-=na; na=0; }
+      if(nb>S.buf.duration){ na-=(nb-S.buf.duration); nb=S.buf.duration; }
+      S.a=Math.max(0,na); S.b=Math.min(S.buf.duration,nb);
+    }
+    draw();
+  });
+  ['pointerup','pointercancel'].forEach(ev=>cv.addEventListener(ev,()=>{ S.mode=null; }));
+  $('#pp').onclick=()=>{ if(S.buf) playBuf(sliceBuf(S.buf,S.a,S.b),$('#pp')); };
+  $('#exW').onclick=()=>{ if(S.buf) exportBuffer(sliceBuf(S.buf,S.a,S.b),safeName(S.name)+'-trim','wav'); };
+  $('#exM').onclick=()=>{ if(S.buf) exportBuffer(sliceBuf(S.buf,S.a,S.b),safeName(S.name)+'-trim','mp3'); };
+  window.__pageRedraw=()=>requestAnimationFrame(draw);
+}
+
+/* ================= MERGE ================= */
+function renderMerge(){
+  const S={items:[]};
+  page.innerHTML=toolPage('Merge','Join audio files one after another into a single track. Reorder the list before exporting.',
+   `<div class="panel">${dropHtml('Tap to add audio files','multiple files supported · drag & drop welcome')}</div>
+    <div class="panel mt" id="listP" hidden>
+      <div id="list"></div>
+      <div class="row between mt">
+        <span class="chip" id="tot">0 files</span>
+        <div class="row">
+          <button class="btn ghost small" id="clear">Clear all</button>
+          <button class="btn ghost" id="exW">${IC.download} WAV</button>
+          <button class="btn primary" id="exM">${IC.download} MP3</button>
+        </div>
+      </div>
+    </div>`);
+  function renderList(){
+    const l=$('#list');
+    l.innerHTML=S.items.map((it,i)=>`
+      <div class="file-row">
+        ${fileRowHtml('file',esc(it.name),fmtTime(it.buf.duration)+' · '+(it.buf.numberOfChannels>1?'stereo':'mono'))}
+        <button class="icon-sq" data-mv="${i}" data-d="-1" ${i===0?'disabled':''} aria-label="Move up">${IC.up}</button>
+        <button class="icon-sq" data-mv="${i}" data-d="1" ${i===S.items.length-1?'disabled':''} aria-label="Move down">${IC.down}</button>
+        <button class="icon-sq danger" data-rm="${i}" aria-label="Remove">${IC.trash}</button>
+      </div>`).join('');
+    const dur=S.items.reduce((a,b)=>a+b.buf.duration,0);
+    $('#tot').textContent=S.items.length+' file'+(S.items.length===1?'':'s')+' · '+fmtTime(dur);
+    $('#listP').hidden=!S.items.length;
+    $$('[data-mv]',l).forEach(b=>b.onclick=()=>{
+      const i=+b.dataset.mv, j=i+(+b.dataset.d);
+      const it=S.items.splice(i,1)[0]; S.items.splice(j,0,it); renderList();
+    });
+    $$('[data-rm]',l).forEach(b=>b.onclick=()=>{ S.items.splice(+b.dataset.rm,1); renderList(); });
+  }
+  async function load(files){
+    for(const f of files){
+      try{ const buf=await decodeFile(f); S.items.push({name:f.name,buf}); }
+      catch(e){ toast("Couldn't decode "+f.name); }
+    }
+    renderList();
+  }
+  attachDrop($('#dz'),fs=>load(fs));
+  $('#clear').onclick=()=>{ S.items=[]; renderList(); };
+  function concat(){
+    if(!S.items.length) return null;
+    const c=AC();
+    let total=0; S.items.forEach(it=>total+=it.buf.length);
+    const nc=Math.max(...S.items.map(it=>it.buf.numberOfChannels));
+    const out=c.createBuffer(nc,total,c.sampleRate);
+    let pos=0;
+    S.items.forEach(it=>{
+      const b=it.buf;
+      for(let ch=0;ch<nc;ch++){
+        if(ch<b.numberOfChannels) out.getChannelData(ch).set(b.getChannelData(ch),pos);
+      }
+      pos+=b.length;
+    });
+    return out;
+  }
+  $('#exW').onclick=()=>{ const b=concat(); if(b) exportBuffer(b,'merged-audio','wav'); else toast('Add files first'); };
+  $('#exM').onclick=()=>{ const b=concat(); if(b) exportBuffer(b,'merged-audio','mp3'); else toast('Add files first'); };
+  renderList();
+}
+
+/* ================= MIX ================= */
+function renderMix(){
+  const S={A:null,B:null};
+  function slotHtml(key,ph){
+    return `<div class="panel mt" id="slot${key}" hidden>
+      <div class="file-row">
+        <div class="file-ic">${IC.music}</div><div class="file-meta"><div class="fm-n"><span id="n${key}"></span></div><div class="fm-s"><span id="s${key}"></span></div></div>
+        <button class="icon-sq danger" id="rm${key}" aria-label="Remove">${IC.trash}</button>
+      </div>
+      <div class="wave-wrap sm mt"><canvas id="wv${key}"></canvas></div>
+      <div class="row mt" style="gap:16px">
+        <div style="flex:1"><label class="lbl">Level <span id="lv${key}" style="color:var(--cyan)">100%</span></label>
+          <input type="range" class="slider" id="gs${key}" min="0" max="200" value="100"></div>
+      </div>
+    </div>
+    <div class="panel mt" id="drop${key}">${dropHtml(ph,'track '+key+' — e.g. music or voice')}</div>`;
+  }
+  page.innerHTML=toolPage('Mix','Blend two audio tracks together. Set each level, preview the result, export the mix.',
+   slotHtml('A','Track A — e.g. music')+slotHtml('B','Track B — e.g. voice')+
+   `<div class="panel mt" id="mixP" hidden>
+      <div class="row between"><label class="lbl" style="margin:0">Mixed result</label><span class="chip" id="mdur"></span></div>
+      <div class="wave-wrap sm mt"><canvas id="wmix"></canvas></div>
+      <div class="row mt">
+        <button class="btn ghost" id="pp">${IC.play} Preview</button>
+        <div class="spacer"></div>
+        <button class="btn ghost" id="exW">${IC.download} WAV</button>
+        <button class="btn primary" id="exM">${IC.download} MP3</button>
+      </div>
+    </div>`);
+  ['A','B'].forEach(k=>{
+    attachDrop($('#drop'+k),async fs=>{
+      const f=fs[0];
+      try{
+        const buf=await decodeFile(f);
+        S[k]={name:f.name,buf,gain:1};
+        $('#drop'+k).style.display='none';
+        $('#slot'+k).hidden=false;
+        $('#n'+k).textContent=f.name;
+        $('#s'+k).textContent=fmtTime(buf.duration)+' · '+(buf.numberOfChannels>1?'stereo':'mono');
+        drawSlot(k); mixDraw();
+      }catch(e){ toast("Couldn't decode "+f.name); }
+    });
+    $('#rm'+k).onclick=()=>{ S[k]=null; $('#slot'+k).hidden=true; $('#drop'+k).style.display=''; mixDraw(); };
+    $('#gs'+k).oninput=e=>{ if(!S[k]) return; S[k].gain=+e.target.value/100; $('#lv'+k).textContent=e.target.value+'%'; mixDraw(); };
+  });
+  function drawSlot(k){
+    const it=S[k]; if(!it) return;
+    drawPeaks($('#wv'+k),it.buf.getChannelData(0),{color:k==='A'?'#e879f9':'#22d3ee'});
+  }
+  function mixData(){
+    if(!(S.A&&S.B)) return null;
+    const c=AC();
+    const total=Math.max(S.A.buf.length,S.B.buf.length);
+    const L=new Float32Array(total), R=new Float32Array(total);
+    [S.A,S.B].forEach(it=>{
+      const d0=it.buf.getChannelData(0), d1=it.buf.numberOfChannels>1?it.buf.getChannelData(1):d0;
+      for(let i=0;i<d0.length;i++){ L[i]+=d0[i]*it.gain; R[i]+=d1[i]*it.gain; }
+    });
+    return {L,R,total};
+  }
+  function mixDraw(){
+    const m=mixData();
+    $('#mixP').hidden=!m;
+    if(!m) return;
+    $('#mdur').textContent=fmtTime(m.total/AC().sampleRate);
+    drawPeaks($('#wmix'),m.L,{color:'#818cf8'});
+  }
+  function mixBuf(){
+    const m=mixData(); if(!m) return null;
+    const out=AC().createBuffer(2,m.total,AC().sampleRate);
+    out.getChannelData(0).set(m.L); out.getChannelData(1).set(m.R);
+    return out;
+  }
+  $('#pp').onclick=()=>{ const b=mixBuf(); if(b) playBuf(b,$('#pp')); };
+  $('#exW').onclick=()=>{ const b=mixBuf(); if(b) exportBuffer(b,'mixed-audio','wav'); };
+  $('#exM').onclick=()=>{ const b=mixBuf(); if(b) exportBuffer(b,'mixed-audio','mp3'); };
+  window.__pageRedraw=()=>{ if(S.A)drawSlot('A'); if(S.B)drawSlot('B'); mixDraw(); };
+}
+
+/* ================= SPLIT ================= */
+function renderSplit(){
+  const S={buf:null,name:'',pts:[]};
+  page.innerHTML=toolPage('Split','Slice one file into segments. Tap the waveform to add a cut point (tap a marker to remove it), then download the pieces.',
+   `<div class="panel">${dropHtml('Tap to choose an audio file','or drag & drop here')}</div>
+    <div class="panel mt" id="work" hidden>
+      <div class="row between">
+        <div class="file-row" style="flex:1;min-width:230px;border:0;padding:0;gap:10px"><div class="file-ic">${IC.music}</div><div class="file-meta"><div class="fm-n"><span id="fn"></span></div><div class="fm-s"><span id="fs"></span></div></div></div>
+        <button class="btn ghost small" id="chg">Change file</button>
+      </div>
+      <div class="wave-wrap mt"><canvas id="wc"></canvas></div>
+      <p class="dim mt" style="font-size:12.5px">Tap the waveform to add cut points · tap an existing marker to remove it.</p>
+      <div id="segs" class="mt"></div>
+      <div class="row mt" style="justify-content:flex-end">
+        <button class="btn primary" id="exAll">${IC.download} Download all (WAV)</button>
+      </div>
+    </div>`);
+  const cv=$('#wc');
+  function segs(){
+    const dur=S.buf.duration, pts=S.pts.slice().sort((a,b)=>a-b);
+    const out=[], bounds=[0,...pts,dur];
+    for(let i=0;i<bounds.length-1;i++){ const a=bounds[i], b=bounds[i+1]; if(b-a>0.05) out.push({a,b}); }
+    return out;
+  }
+  function renderSegs(){
+    const ss=segs();
+    $('#segs').innerHTML=ss.map((s,i)=>`
+      <div class="file-row">
+        ${fileRowHtml('file','Segment '+(i+1),fmtTime(s.a)+' → '+fmtTime(s.b)+' · '+fmtTime(s.b-s.a))}
+        <button class="btn ghost small" data-sw="${i}">WAV</button>
+        <button class="btn primary small" data-sm="${i}">MP3</button>
+      </div>`).join('');
+    $$('[data-sw]').forEach(b=>b.onclick=()=>{ const s=segs()[+b.dataset.sw]; exportBuffer(sliceBuf(S.buf,s.a,s.b),'segment-'+(+b.dataset.sw+1),'wav'); });
+    $$('[data-sm]').forEach(b=>b.onclick=()=>{ const s=segs()[+b.dataset.sm]; exportBuffer(sliceBuf(S.buf,s.a,s.b),'segment-'+(+b.dataset.sm+1),'mp3'); });
+  }
+  function draw(){
+    if(!S.buf) return;
+    const r=cv.getBoundingClientRect();
+    drawPeaks(cv,S.buf.getChannelData(0),{mid:true});
+    const g=cv.getContext('2d'), dpr=window.devicePixelRatio||1, h=cv.clientHeight;
+    g.setTransform(dpr,0,0,dpr,0,0);
+    S.pts.forEach((p,i)=>{
+      const x=p/S.buf.duration*r.width;
+      g.strokeStyle='#f472b6'; g.lineWidth=2;
+      g.beginPath(); g.moveTo(x,0); g.lineTo(x,h); g.stroke();
+      g.fillStyle='#f472b6'; rr(g,x-11,6,22,18,5); g.fill();
+      g.fillStyle='#3b0a1e'; g.font='800 11px system-ui, sans-serif'; g.textBaseline='middle';
+      g.fillText(String(i+1),x,15.5);
+    });
+    renderSegs();
+  }
+  cv.addEventListener('click',e=>{
+    if(!S.buf) return;
+    const r=cv.getBoundingClientRect();
+    const f=clamp((e.clientX-r.left)/r.width,0,1), t=f*S.buf.duration;
+    let best=-1, bd=9;
+    S.pts.forEach((p,i)=>{ const d=Math.abs(p/S.buf.duration*r.width-(e.clientX-r.left)); if(d<bd){ bd=d; best=i; } });
+    if(best>=0) S.pts.splice(best,1);
+    else S.pts.push(t);
+    draw();
+  });
+  async function load(f){
+    try{
+      const buf=await decodeFile(f);
+      S.buf=buf; S.name=f.name; S.pts=[];
+      $('#fn').textContent=f.name;
+      $('#fs').textContent=fmtTime(buf.duration);
+      $('#work').hidden=false;
+      requestAnimationFrame(draw);
+    }catch(e){ toast("Couldn't decode "+f.name); }
+  }
+  attachDrop($('#dz'),fs=>load(fs[0]));
+  $('#chg').onclick=()=>{ const i=$('#dz input'); if(i) i.click(); };
+  $('#exAll').onclick=async()=>{
+    const ss=segs();
+    for(let i=0;i<ss.length;i++){
+      exportBuffer(sliceBuf(S.buf,ss[i].a,ss[i].b),'segment-'+(i+1),'wav');
+      await sleep(400);
+    }
+  };
+  window.__pageRedraw=draw;
+}
+
+/* ================= INSERT (splice) ================= */
+function renderInsert(){
+  const S={base:null,ins:null,pos:0,xf:true};
+  const dz=(id,main,sub)=>`<div class="drop" id="${id}">${IC.upload}<div class="d-main">${main}</div><div class="d-sub">${sub}</div></div>`;
+  page.innerHTML=toolPage('Insert','Splice one audio file into another at any position — with an optional crossfade at the join.',
+   `<div class="panel">${dz('dzb','Base audio — the file you\'ll cut open','mp3, wav, m4a, ogg…')}</div>
+    <div class="panel mt">${dz('dzi','Insert audio — the file to splice in','mp3, wav, m4a, ogg…')}</div>
+    <div class="panel mt" id="work" hidden>
+      <div class="file-row"><div class="file-ic">${IC.file}</div><div class="file-meta"><div class="fm-n"><span id="bn"></span></div><div class="fm-s"><span id="bs"></span></div></div></div>
+      <div class="file-row mt"><div class="file-ic">${IC.file}</div><div class="file-meta"><div class="fm-n"><span id="inn"></span></div><div class="fm-s"><span id="ins2"></span></div></div></div>
+      <div class="row mt" style="gap:16px">
+        <div style="flex:1;min-width:200px"><label class="lbl">Insert position <span id="pv" style="color:var(--cyan)">00:00</span></label>
+          <input type="range" class="slider" id="pos" min="0" max="1000" value="0"></div>
+        <span class="chip on" id="xfChip">${IC.check} 0.2s crossfade</span>
+      </div>
+      <div class="row mt">
+        <button class="btn ghost" id="pp">${IC.play} Preview</button>
+        <div class="spacer"></div>
+        <button class="btn ghost" id="exW">${IC.download} WAV</button>
+        <button class="btn primary" id="exM">${IC.download} MP3</button>
+      </div>
+    </div>`);
+  async function loadOne(which,f){
+    try{
+      const buf=await decodeFile(f);
+      if(which==='base'){ S.base={name:f.name,buf}; S.pos=0; } else S.ins={name:f.name,buf};
+      refresh();
+    }catch(e){ toast("Couldn't decode "+f.name); }
+  }
+  attachDrop($('#dzb'),fs=>loadOne('base',fs[0]));
+  attachDrop($('#dzi'),fs=>loadOne('ins',fs[0]));
+  function refresh(){
+    const work=$('#work');
+    work.hidden=!(S.base&&S.ins);
+    if(!S.base||!S.ins) return;
+    $('#bn').textContent='Base: '+S.base.name;
+    $('#bs').textContent=fmtTime(S.base.buf.duration)+' · '+(S.base.buf.numberOfChannels>1?'stereo':'mono');
+    $('#inn').textContent='Insert: '+S.ins.name;
+    $('#ins2').textContent=fmtTime(S.ins.buf.duration);
+    const pos=$('#pos');
+    pos.max=Math.floor(S.base.buf.duration*1000);
+    pos.value=Math.floor(S.pos*1000);
+    $('#pv').textContent=fmtTime(S.pos);
+  }
+  $('#pos').oninput=e=>{ S.pos=+e.target.value/1000; $('#pv').textContent=fmtTime(S.pos); };
+  $('#xfChip').onclick=()=>{ S.xf=!S.xf; $('#xfChip').classList.toggle('on',S.xf); };
+  function splice(){
+    const b=S.base.buf, i=S.ins.buf, c=AC();
+    const p0=Math.floor(clamp(S.pos,0,b.duration)*c.sampleRate);
+    const cut=S.xf?Math.min(p0,Math.floor(.2*c.sampleRate)):0;
+    const total=Math.max(1,(p0-cut)+cut+(i.length-cut)+(b.length-p0));
+    const out=c.createBuffer(2,total,c.sampleRate);
+    const L=out.getChannelData(0), R=out.getChannelData(1);
+    const b0=b.getChannelData(0), b1=b.numberOfChannels>1?b.getChannelData(1):b0;
+    const i0=i.getChannelData(0), i1=i.numberOfChannels>1?i.getChannelData(1):i0;
+    const copy=(dst,src,from,len)=>{ for(let j=0;j<len;j++) dst[from+j]=src[j]; };
+    const n1=p0-cut;
+    for(let ch=0;ch<2;ch++){ const src=ch?b1:b0, dst=ch?R:L; copy(dst,src,0,n1); }
+    for(let j=0;j<cut;j++){
+      const t=cut>0?j/cut:1;
+      L[n1+j]=b0[p0-cut+j]*(1-t)+i0[j]*t;
+      R[n1+j]=b1[p0-cut+j]*(1-t)+i1[j]*t;
+    }
+    const n3=i.length-cut, o2=n1+cut;
+    for(let ch=0;ch<2;ch++){ const src=ch?i1:i0, dst=ch?R:L; copy(dst,src,cut,n3); }
+    const n4=b.length-p0, o3=o2+n3;
+    for(let ch=0;ch<2;ch++){ const src=ch?b1:b0, dst=ch?R:L; copy(dst,src,p0,n4); }
+    return out;
+  }
+  $('#pp').onclick=()=>{ if(S.base&&S.ins) playBuf(splice(),$('#pp')); };
+  $('#exW').onclick=()=>{ if(S.base&&S.ins) exportBuffer(splice(),'inserted-audio','wav'); };
+  $('#exM').onclick=()=>{ if(S.base&&S.ins) exportBuffer(splice(),'inserted-audio','mp3'); };
+}
+
+/* ================= VOLUME BOOSTER ================= */
+function renderBoost(){
+  const S={buf:null,name:'',db:6,soft:true,proc:null};
+  page.innerHTML=toolPage('Volume Booster','Amplify quiet recordings. The soft-clip limiter keeps it punchy without nasty distortion.',
+   `<div class="panel">${dropHtml('Tap to choose an audio file','or drag & drop here')}</div>
+    <div class="panel mt" id="work" hidden>
+      <div class="row between">
+        <div class="file-row" style="flex:1;min-width:230px;border:0;padding:0;gap:10px"><div class="file-ic">${IC.music}</div><div class="file-meta"><div class="fm-n"><span id="fn"></span></div><div class="fm-s"><span id="fs"></span></div></div></div>
+        <button class="btn ghost small" id="chg">Change file</button>
+      </div>
+      <div class="row mt" style="gap:16px">
+        <div style="flex:1;min-width:220px"><label class="lbl">Gain <span id="dbv" style="color:var(--cyan)">+6.0 dB</span></label>
+          <input type="range" class="slider" id="db" min="-12" max="18" step="0.5" value="6"></div>
+        <span class="chip on" id="softChip">${IC.check} Soft-clip limiter</span>
+      </div>
+      <div class="wave-wrap mt"><canvas id="wc"></canvas></div>
+      <div class="row mt">
+        <button class="btn ghost" id="pp">${IC.play} Preview</button>
+        <div class="spacer"></div>
+        <button class="btn ghost" id="exW">${IC.download} WAV</button>
+        <button class="btn primary" id="exM">${IC.download} MP3</button>
+      </div>
+    </div>`);
+  const cv=$('#wc');
+  function draw(){
+    if(S.proc) drawPeaks(cv,S.proc.getChannelData(0),{color:'#34d399'});
+    else if(S.buf) drawPeaks(cv,S.buf.getChannelData(0),{color:'#7d8fd6'});
+  }
+  async function process(){
+    if(!S.buf) return;
+    const buf=S.buf, g=Math.pow(10,S.db/20);
+    const out=AC().createBuffer(buf.numberOfChannels,buf.length,buf.sampleRate);
+    const tanhG=Math.tanh(g);
+    for(let ch=0;ch<buf.numberOfChannels;ch++){
+      const d=buf.getChannelData(ch), o=out.getChannelData(ch);
+      for(let i=0;i<d.length;i++){
+        const x=d[i]*g;
+        o[i]=S.soft?Math.tanh(x)/tanhG:clamp(x,-1,1);
+      }
+      await sleep(0);
+    }
+    S.proc=out; draw();
+  }
+  async function load(f){
+    try{
+      const buf=await decodeFile(f);
+      S.buf=buf; S.name=f.name; S.proc=null;
+      $('#fn').textContent=f.name;
+      $('#fs').textContent=fmtTime(buf.duration);
+      $('#work').hidden=false;
+      await sleep(30); draw(); await process();
+    }catch(e){ toast("Couldn't decode "+f.name); }
+  }
+  attachDrop($('#dz'),fs=>load(fs[0]));
+  $('#chg').onclick=()=>{ const i=$('#dz input'); if(i) i.click(); };
+  $('#db').oninput=async e=>{ S.db=+e.target.value; $('#dbv').textContent=(S.db>=0?'+':'')+S.db.toFixed(1)+' dB'; await process(); };
+  $('#softChip').onclick=async()=>{ S.soft=!S.soft; $('#softChip').classList.toggle('on',S.soft); await process(); };
+  $('#pp').onclick=()=>{ if(S.proc) playBuf(S.proc,$('#pp')); };
+  $('#exW').onclick=()=>{ if(S.proc) exportBuffer(S.proc,safeName(S.name)+'-boosted','wav'); };
+  $('#exM').onclick=()=>{ if(S.proc) exportBuffer(S.proc,safeName(S.name)+'-boosted','mp3'); };
+  window.__pageRedraw=draw;
+}
+
+/* ================= RINGTONE MAKER ================= */
+function renderRingtone(){
+  const S={buf:null,name:'',len:30,start:0,fades:true};
+  page.innerHTML=toolPage('Ringtone Maker','Turn any song into a ringtone. Pick a length, slide to the best part, add fades, export.',
+   `<div class="panel">${dropHtml('Tap to choose an audio file','or drag & drop here')}</div>
+    <div class="panel mt" id="work" hidden>
+      <div class="row between">
+        <div class="file-row" style="flex:1;min-width:230px;border:0;padding:0;gap:10px"><div class="file-ic">${IC.music}</div><div class="file-meta"><div class="fm-n"><span id="fn"></span></div><div class="fm-s"><span id="fs"></span></div></div></div>
+        <button class="btn ghost small" id="chg">Change file</button>
+      </div>
+      <div class="row mt" style="gap:16px">
+        <div style="flex:1"><label class="lbl">Length <span id="llv" style="color:var(--cyan)">30 s</span></label>
+          <input type="range" class="slider" id="len" min="10" max="60" step="5" value="30"></div>
+        <span class="chip on" id="fadesChip">${IC.check} Fade in / out</span>
+      </div>
+      <div class="mt"><label class="lbl">Start <span id="slv" style="color:var(--cyan)">00:00</span></label>
+        <input type="range" class="slider" id="sld" min="0" max="1000" value="0"></div>
+      <div class="wave-wrap mt"><canvas id="wc"></canvas></div>
+      <div class="row mt">
+        <button class="btn ghost" id="pp">${IC.play} Preview</button>
+        <div class="spacer"></div>
+        <button class="btn ghost" id="exW">${IC.download} WAV</button>
+        <button class="btn primary" id="exM">${IC.download} MP3</button>
+      </div>
+    </div>`);
+  const cv=$('#wc');
+  const maxStart=()=>S.buf?Math.max(0,S.buf.duration-S.len):0;
+  function draw(){
+    if(!S.buf) return;
+    const dur=S.buf.duration;
+    drawPeaks(cv,S.buf.getChannelData(0),{sel0:S.start/dur,sel1:Math.min(1,(S.start+Math.min(S.len,Math.max(0.1,dur-S.start))))/dur,mid:true});
+    $('#slv').textContent=fmtTime(S.start);
+  }
+  function refreshSlider(){
+    const s=$('#sld');
+    s.max=Math.floor(maxStart()*1000);
+    S.start=clamp(S.start,0,maxStart());
+    s.value=Math.floor(S.start*1000);
+    draw();
+  }
+  function outBuf(){
+    const a=S.start, b=Math.min(S.buf.duration,S.start+S.len);
+    const out=sliceBuf(S.buf,a,b);
+    if(S.fades){
+      const sr=out.sampleRate;
+      const fi=Math.min(.5,out.length/sr), fo=Math.min(.8,out.length/sr);
+      for(let ch=0;ch<out.numberOfChannels;ch++){
+        const d=out.getChannelData(ch);
+        for(let i=0;i<d.length;i++){
+          const t=i/sr;
+          if(t<fi) d[i]*=t/fi;
+          if(t>out.duration-fo) d[i]*=Math.max(0,(out.duration-t)/fo);
+        }
+      }
+    }
+    return out;
+  }
+  async function load(f){
+    try{
+      const buf=await decodeFile(f);
+      S.buf=buf; S.name=f.name; S.len=30; S.start=0; S.fades=true;
+      $('#fn').textContent=f.name;
+      $('#fs').textContent=fmtTime(buf.duration);
+      $('#work').hidden=false;
+      refreshSlider();
+    }catch(e){ toast("Couldn't decode "+f.name); }
+  }
+  attachDrop($('#dz'),fs=>load(fs[0]));
+  $('#chg').onclick=()=>{ const i=$('#dz input'); if(i) i.click(); };
+  $('#len').oninput=e=>{ S.len=+e.target.value; $('#llv').textContent=S.len+' s'; refreshSlider(); };
+  $('#sld').oninput=e=>{ S.start=+e.target.value/1000; draw(); };
+  $('#fadesChip').onclick=()=>{ S.fades=!S.fades; $('#fadesChip').classList.toggle('on',S.fades); };
+  $('#pp').onclick=()=>{ if(S.buf) playBuf(outBuf(),$('#pp')); };
+  $('#exW').onclick=()=>{ if(S.buf) exportBuffer(outBuf(),safeName(S.name)+'-ringtone','wav'); };
+  $('#exM').onclick=()=>{ if(S.buf) exportBuffer(outBuf(),safeName(S.name)+'-ringtone','mp3'); };
+  window.__pageRedraw=draw;
+}
+
+/* ================= VIDEO TO MP3 ================= */
+function renderV2A(){
+  const S={buf:null,name:''};
+  page.innerHTML=toolPage('Video to MP3','Extract the audio track from a video file and save it as MP3 or WAV — entirely on your device.',
+   `<div class="panel">${dropHtml('Tap to choose a video (or audio) file','mp4, webm, mov, mp3, wav… nothing is uploaded')}</div>
+    <div class="panel mt" id="work" hidden>
+      <div class="row between">
+        <div class="file-row" style="flex:1;min-width:230px;border:0;padding:0;gap:10px"><div class="file-ic">${IC.video}</div><div class="file-meta"><div class="fm-n"><span id="fn"></span></div><div class="fm-s"><span id="fs"></span></div></div></div>
+        <button class="btn ghost small" id="chg">Change file</button>
+      </div>
+      <div class="wave-wrap mt"><canvas id="wc"></canvas></div>
+      <div class="row mt">
+        <button class="btn ghost" id="pp">${IC.play} Preview</button>
+        <div class="spacer"></div>
+        <button class="btn ghost" id="exW">${IC.download} WAV</button>
+        <button class="btn primary" id="exM">${IC.download} MP3</button>
+      </div>
+    </div>`);
+  const cv=$('#wc');
+  async function load(f){
+    try{
+      const buf=await decodeFile(f);
+      S.buf=buf; S.name=f.name;
+      $('#fn').textContent=f.name;
+      $('#fs').textContent=fmtTime(buf.duration)+' · '+(buf.numberOfChannels>1?'stereo':'mono')+' audio track';
+      $('#work').hidden=false;
+      requestAnimationFrame(()=>drawPeaks(cv,buf.getChannelData(0),{color:'#e879f9'}));
+    }catch(e){ toast("Couldn't extract audio from "+f.name); }
+  }
+  attachDrop($('#dz'),fs=>load(fs[0]),'video/*,audio/*');
+  $('#chg').onclick=()=>{ const i=$('#dz input'); if(i) i.click(); };
+  $('#pp').onclick=()=>{ if(S.buf) playBuf(S.buf,$('#pp')); };
+  $('#exW').onclick=()=>{ if(S.buf) exportBuffer(S.buf,safeName(S.name),'wav'); };
+  $('#exM').onclick=()=>{ if(S.buf) exportBuffer(S.buf,safeName(S.name),'mp3'); };
+  window.__pageRedraw=()=>{ if(S.buf) drawPeaks(cv,S.buf.getChannelData(0),{color:'#e879f9'}); };
+}
+
+/* ================= MP3 TO VIDEO ================= */
+function renderA2V(){
+  const S={buf:null,name:'',active:false};
+  page.innerHTML=toolPage('MP3 to Video','Turn audio into an animated video — a 720p visualizer with bars synced to your sound. Rendered locally in real time.',
+   `<div class="panel">${dropHtml('Tap to choose an audio file','mp3, wav, m4a, ogg…')}</div>
+    <div class="panel mt" id="work" hidden>
+      <div class="row between">
+        <div class="file-row" style="flex:1;min-width:230px;border:0;padding:0;gap:10px"><div class="file-ic">${IC.music}</div><div class="file-meta"><div class="fm-n"><span id="fn"></span></div><div class="fm-s"><span id="fs"></span></div></div></div>
+        <button class="btn ghost small" id="chg">Change file</button>
+      </div>
+      <div class="av-wrap mt" id="avPanel" hidden><canvas id="avCanvas" width="1280" height="720"></canvas></div>
+      <div class="mt" id="avProgWrap" style="visibility:hidden"><div class="prog"><div id="avProg"></div></div></div>
+      <div class="row mt">
+        <button class="btn primary" id="avBtn">${IC.video} Generate video</button>
+        <span class="muted" style="font-size:13px" id="avHint">Rendering takes as long as the audio (kept in sync, so keep this tab visible).</span>
+      </div>
+    </div>`);
+  let rec=null;
+  async function load(f){
+    try{
+      const buf=await decodeFile(f);
+      S.buf=buf; S.name=f.name;
+      $('#fn').textContent=f.name;
+      $('#fs').textContent=fmtTime(buf.duration);
+      $('#work').hidden=false;
+    }catch(e){ toast("Couldn't decode "+f.name); }
+  }
+  attachDrop($('#dz'),fs=>load(fs[0]));
+  $('#chg').onclick=()=>{ const i=$('#dz input'); if(i) i.click(); };
+  $('#avBtn').onclick=async()=>{
+    if(!S.buf||S.active) return;
+    S.active=true;
+    const btn=$('#avBtn'); btn.disabled=true; btn.innerHTML=IC.clock+' Rendering…';
+    $('#avPanel').hidden=false;
+    $('#avProgWrap').style.visibility='visible';
+    const c=AC(); await c.resume();
+    const cv=$('#avCanvas'); cv.width=1280; cv.height=720;
+    const g=cv.getContext('2d');
+    const stream=cv.captureStream(30);
+    const dst=c.createMediaStreamDestination();
+    const src=c.createBufferSource(); src.buffer=S.buf;
+    const an=c.createAnalyser(); an.fftSize=256; an.smoothingTimeConstant=.82;
+    src.connect(an); an.connect(dst); an.connect(c.destination);
+    stream.addTrack(dst.stream.getAudioTracks()[0]);
+    let mime='video/webm';
+    if(window.MediaRecorder) for(const t of ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm']){
+      if(MediaRecorder.isTypeSupported(t)){ mime=t; break; }
+    }
+    if(!window.MediaRecorder){ toast('Video recording not supported in this browser'); S.active=false; btn.disabled=false; btn.innerHTML=IC.video+' Generate video'; return; }
+    const chunks=[];
+    rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:4000000});
+    rec.ondataavailable=e=>{ if(e.data&&e.data.size) chunks.push(e.data); };
+    const done=new Promise(res=>rec.onstop=res);
+    rec.start(250);
+    const t0=c.currentTime; src.start(t0);
+    const freq=new Uint8Array(an.frequencyBinCount);
+    let finished=false;
+    const finish=()=>{
+      if(finished) return; finished=true;
+      S.active=false;
+      try{src.stop();}catch(e){}
+      try{an.disconnect();}catch(e){}
+      if(rec&&rec.state!=='inactive') rec.stop();
+      done.then(()=>{
+        const blob=new Blob(chunks,{type:'video/webm'});
+        btn.disabled=false; btn.innerHTML=IC.video+' Generate video';
+        if(blob.size>1000) downloadBlob(blob,safeName(S.name)+'-visual.webm');
+        else toast('Could not record video');
+      });
+    };
+    const draw=()=>{
+      if(!S.active) return;
+      an.getByteFrequencyData(freq);
+      const bg=g.createLinearGradient(0,0,0,720);
+      bg.addColorStop(0,'#0b1233'); bg.addColorStop(1,'#070c22');
+      g.fillStyle=bg; g.fillRect(0,0,1280,720);
+      const n=48, bw=1280/n;
+      for(let i=0;i<n;i++){
+        const v=freq[Math.floor(i/n*freq.length*.72)]/255;
+        const bh=Math.max(10,v*460);
+        g.fillStyle=`hsla(${195+i/n*110},85%,60%,.92)`;
+        rr(g,i*bw+6,640-bh,bw-12,bh,8); g.fill();
+      }
+      g.fillStyle='#eef2ff'; g.font='700 46px system-ui, sans-serif';
+      g.fillText(S.name.length>34?S.name.slice(0,34)+'…':S.name,60,116);
+      const t=Math.max(0,c.currentTime-t0);
+      g.font='600 30px system-ui, sans-serif'; g.fillStyle='#8f9cc6';
+      g.fillText(fmtTime(t)+' / '+fmtTime(S.buf.duration),60,700);
+      const bar=g.createLinearGradient(0,0,1280,0);
+      bar.addColorStop(0,'#22d3ee'); bar.addColorStop(1,'#a78bfa');
+      g.fillStyle=bar; g.fillRect(0,712,1280*clamp(t/S.buf.duration,0,1),8);
+      $('#avProg').style.width=(clamp(t/S.buf.duration,0,1)*100)+'%';
+      if(t>=S.buf.duration){ finish(); return; }
+      requestAnimationFrame(draw);
+    };
+    draw();
+  };
+  window.__pageStop=()=>{
+    if(S.active){ S.active=false; try{ rec&&rec.state!=='inactive'&&rec.stop(); }catch(e){} }
+  };
+}
+
+/* ================= NOISE REMOVER ================= */
+function hann(n){ const w=new Float32Array(n); for(let i=0;i<n;i++) w[i]=.5-.5*Math.cos(2*Math.PI*i/(n-1)); return w; }
+function fft(re,im){
+  const n=re.length;
+  for(let i=1,j=0;i<n;i++){
+    let bit=n>>1;
+    for(;j&bit;bit>>=1) j^=bit;
+    j^=bit;
+    if(i<j){ let t=re[i]; re[i]=re[j]; re[j]=t; t=im[i]; im[i]=im[j]; im[j]=t; }
+  }
+  for(let len=2;len<=n;len<<=1){
+    const ang=-2*Math.PI/len, wr=Math.cos(ang), wi=Math.sin(ang);
+    for(let i=0;i<n;i+=len){
+      let cr=1,ci=0;
+      for(let j=0;j<len>>1;j++){
+        const a=i+j, b=a+(len>>1);
+        const vr=re[b]*cr-im[b]*ci, vi=re[b]*ci+im[b]*cr;
+        re[b]=re[a]-vr; im[b]=im[a]-vi;
+        re[a]+=vr; im[a]+=vi;
+        const nr=cr*wr-ci*wi; ci=cr*wi+ci*wr; cr=nr;
+      }
+    }
+  }
+}
+function ifft(re,im){
+  const n=re.length;
+  for(let i=0;i<n;i++) im[i]=-im[i];
+  fft(re,im);
+  for(let i=0;i<n;i++){ re[i]/=n; im[i]=-im[i]/n; }
+}
+async function denoiseBuffer(buf,strength,onProg){
+  const sr=buf.sampleRate, nc=buf.numberOfChannels;
+  const frame=2048, hop=512, half=frame/2;
+  const win=hann(frame);
+  const nFrames=Math.max(1,Math.floor((buf.length-frame)/hop)+1);
+  const noise=new Float32Array(half+1);
+  const re0=new Float32Array(frame), im0=new Float32Array(frame);
+  let pf=0;
+  const maxPf=Math.max(1,Math.floor(.5*sr/hop));
+  for(let f=0;f<maxPf&&f<nFrames;f++){
+    const pos=f*hop;
+    for(let c=0;c<nc;c++){
+      const d=buf.getChannelData(c);
+      re0.fill(0);
+      for(let i=0;i<frame;i++) re0[i]=d[pos+i]*win[i];
+      fft(re0,im0);
+      for(let k=0;k<=half;k++) noise[k]+=Math.hypot(re0[k],im0[k]);
+    }
+    pf++;
+  }
+  const norm=Math.max(1,pf*nc);
+  for(let k=0;k<=half;k++) noise[k]/=norm;
+  const outLen=buf.length+frame;
+  const sums=[], wsums=[];
+  for(let c=0;c<nc;c++){ sums.push(new Float32Array(outLen)); wsums.push(new Float32Array(outLen)); }
+  const re=new Float32Array(frame), im=new Float32Array(frame);
+  const yieldEvery=Math.max(1,(nFrames/25)|0);
+  for(let f=0;f<nFrames;f++){
+    const pos=f*hop;
+    for(let c=0;c<nc;c++){
+      const d=buf.getChannelData(c);
+      re.fill(0); im.fill(0);
+      for(let i=0;i<frame;i++) re[i]=d[pos+i]*win[i];
+      fft(re,im);
+      for(let k=0;k<=half;k++){
+        const mag=Math.hypot(re[k],im[k]);
+        const nmag=mag>noise[k]*strength?mag-noise[k]*strength:noise[k]*.02;
+        const s=mag>1e-9?nmag/mag:0;
+        re[k]*=s; im[k]*=s;
+        if(k>0&&k<half){ re[frame-k]=re[k]; im[frame-k]=-im[k]; }
+      }
+      ifft(re,im);
+      const s32=sums[c], w32=wsums[c];
+      for(let i=0;i<frame;i++){ const w2=win[i]*win[i]; s32[pos+i]+=re[i]*win[i]; w32[pos+i]+=w2; }
+    }
+    if(f%yieldEvery===0){ if(onProg) onProg(f/nFrames); await sleep(0); }
+  }
+  const out=AC().createBuffer(nc,buf.length,sr);
+  for(let c=0;c<nc;c++){
+    const o=out.getChannelData(c), s32=sums[c], w32=wsums[c];
+    for(let i=0;i<buf.length;i++){ const w=w32[i]; o[i]=w>1e-6?s32[i]/w:0; }
+  }
+  if(onProg) onProg(1);
+  return out;
+}
+function renderDenoise(){
+  const S={buf:null,name:'',str:1.6,proc:null};
+  page.innerHTML=toolPage('Noise Remover','Removes steady hiss, fan noise and hum using spectral subtraction. The noise profile is captured from the first 0.5s — start the file with a moment of the noise alone for best results.',
+   `<div class="panel">${dropHtml('Tap to choose an audio file','or drag & drop here')}</div>
+    <div class="panel mt" id="work" hidden>
+      <div class="row between">
+        <div class="file-row" style="flex:1;min-width:230px;border:0;padding:0;gap:10px"><div class="file-ic">${IC.music}</div><div class="file-meta"><div class="fm-n"><span id="fn"></span></div><div class="fm-s"><span id="fs"></span></div></div></div>
+        <button class="btn ghost small" id="chg">Change file</button>
+      </div>
+      <div class="row mt" style="gap:16px">
+        <div style="flex:1;min-width:220px"><label class="lbl">Strength <span id="stlv" style="color:var(--cyan)">1.6×</span></label>
+          <input type="range" class="slider" id="str" min="1" max="3" step="0.1" value="1.6"></div>
+        <button class="btn primary" id="run">${IC.bolt} Remove noise</button>
+      </div>
+      <div class="mt" id="progWrap" style="visibility:hidden"><div class="prog"><div id="prog"></div></div></div>
+      <div class="wave-wrap mt"><canvas id="wc"></canvas></div>
+      <div class="row mt">
+        <button class="btn ghost" id="pp">${IC.play} Preview</button>
+        <div class="spacer"></div>
+        <button class="btn ghost" id="exW">${IC.download} WAV</button>
+        <button class="btn primary" id="exM">${IC.download} MP3</button>
+      </div>
+    </div>`);
+  const cv=$('#wc');
+  function draw(color){
+    if(S.proc) drawPeaks(cv,S.proc.getChannelData(0),{color:color||'#34d399'});
+    else if(S.buf) drawPeaks(cv,S.buf.getChannelData(0),{color:'#7d8fd6'});
+  }
+  async function load(f){
+    try{
+      const buf=await decodeFile(f);
+      S.buf=buf; S.name=f.name; S.proc=null;
+      $('#fn').textContent=f.name;
+      $('#fs').textContent=fmtTime(buf.duration);
+      $('#work').hidden=false;
+      requestAnimationFrame(()=>draw());
+    }catch(e){ toast("Couldn't decode "+f.name); }
+  }
+  attachDrop($('#dz'),fs=>load(fs[0]));
+  $('#chg').onclick=()=>{ const i=$('#dz input'); if(i) i.click(); };
+  $('#str').oninput=e=>{ S.str=+e.target.value; $('#stlv').textContent=S.str.toFixed(1)+'×'; };
+  $('#run').onclick=async()=>{
+    if(!S.buf) return;
+    const btn=$('#run'); btn.disabled=true;
+    $('#progWrap').style.visibility='visible';
+    $('#prog').style.width='3%';
+    try{
+      toast('Analyzing & removing noise…',1400);
+      await sleep(30);
+      S.proc=await denoiseBuffer(S.buf,S.str,p=>{ const el=$('#prog'); if(el) el.style.width=Math.round(p*100)+'%'; });
+      requestAnimationFrame(()=>draw());
+      toast('Done — noise reduced');
+    }catch(e){ console.warn(e); toast('Processing failed'); }
+    btn.disabled=false;
+  };
+  $('#pp').onclick=()=>{ if(S.proc) playBuf(S.proc,$('#pp')); };
+  $('#exW').onclick=()=>{ if(S.proc) exportBuffer(S.proc,safeName(S.name)+'-clean','wav'); else toast('Run "Remove noise" first'); };
+  $('#exM').onclick=()=>{ if(S.proc) exportBuffer(S.proc,safeName(S.name)+'-clean','mp3'); else toast('Run "Remove noise" first'); };
+  window.__pageRedraw=()=>draw();
+}
+</script>

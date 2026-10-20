@@ -1,0 +1,183 @@
+<script>
+'use strict';
+/* ================= HOME ================= */
+function toolCard(t){
+  return `<div class="tool${t.pro?' locked':''}" data-go="${t.go}"${t.pro?' data-pro="1"':''}
+    style="--c1:${t.c[0]};--c2:${t.c[1]};--ic:${t.icc}" role="button" tabindex="0" aria-label="${esc(t.nm)}">
+    ${t.crown?`<span class="crown">${IC.crown}</span>`:''}
+    ${t.ai?`<span class="ai-tag">AI</span>`:''}
+    <span class="t-ic">${IC[t.ic]}</span>
+    <span class="t-nm">${t.nm}</span>
+    <span class="t-ds">${t.ds}</span>
+  </div>`;
+}
+function renderHome(){
+  const cards=cat=>TOOLS.filter(t=>t.cat===cat).map(toolCard).join('');
+  page.innerHTML=`
+  <div class="page">
+    <div class="hero">
+      <div class="hero-badge">${IC.bolt} 100% in-browser — your files never leave this device</div>
+      <h1>Every audio tool you need, <span class="grad">right in your browser</span></h1>
+      <p class="sub">Trim, merge, mix, split, boost and clean up audio & video. No installs, no uploads, no sign-in — just open a tool and go.</p>
+      <div class="hero-cta">
+        <button class="btn primary big" data-go="studio">${IC.layers} Open Multi-track Studio</button>
+        <button class="btn ghost big" data-go="trim">${IC.scissors} Quick Trim</button>
+      </div>
+    </div>
+    <h2 class="sec-title">${IC.scissors} Audio Editing</h2>
+    <div class="tools">${cards('edit')}</div>
+    <h2 class="sec-title">${IC.bolt} Audio Processing</h2>
+    <div class="tools">${cards('proc')}</div>
+    <h2 class="sec-title">${IC.check} How it works</h2>
+    <div class="how">
+      <div class="step"><div class="num">1</div><h3>Choose a tool</h3><p>Pick any tool above — everything runs locally with the Web Audio API.</p></div>
+      <div class="step"><div class="num">2</div><h3>Drop in your files</h3><p>Audio (mp3, wav, m4a, ogg…) and video (mp4, webm…) all work. Nothing is uploaded anywhere.</p></div>
+      <div class="step"><div class="num">3</div><h3>Edit & export</h3><p>Make your changes, preview instantly, then save as MP3 or WAV straight to your device.</p></div>
+    </div>
+    <div class="features">
+      <span class="feature">${IC.shield} Private by design</span>
+      <span class="feature">${IC.bolt} Instant, no install</span>
+      <span class="feature">${IC.check} MP3 & WAV export</span>
+      <span class="feature">${IC.music} Works on mobile</span>
+    </div>
+    <footer>Audio Editor — a web build of the mobile toolkit.<br>All processing happens on your device. Nothing is uploaded.</footer>
+  </div>`;
+}
+
+/* ================= OUTPUTS ================= */
+function renderOutputs(){
+  page.innerHTML=toolPage('Outputs','Everything you exported in this session lives here. Files are kept in memory until you close the tab.',
+   `<div class="panel">
+      <div class="row between" style="margin-bottom:14px">
+        <span class="muted" id="outCount"></span>
+        <button class="btn ghost small" id="outClear">Clear list</button>
+      </div>
+      <div id="outList"></div>
+    </div>`);
+  function draw(){
+    const list=$('#outList');
+    $('#outCount').textContent=outputs.length+' file'+(outputs.length===1?'':'s');
+    if(!outputs.length){
+      list.innerHTML=`<div class="empty-studio" style="padding:40px 16px">${IC.folder}
+        <div class="es-t">No exports yet</div>
+        <div style="font-size:14px">Use any tool and hit MP3 or WAV — it shows up here.</div></div>`;
+      return;
+    }
+    list.innerHTML=outputs.map((o,i)=>{
+      const ext=o.name.split('.').pop().toLowerCase();
+      const cls=ext==='mp3'?'mp3':(ext==='webm'?'webm':'');
+      return `<div class="out-row">
+        <div class="out-ic ${cls}">${ext==='webm'?IC.video:IC.music}</div>
+        <div class="file-meta"><div class="fm-n">${esc(o.name)}</div>
+        <div class="fm-s">${fmtSize(o.size)} · ${o.date.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div></div>
+        <button class="btn ghost small" data-dl="${i}">${IC.download} Download</button>
+      </div>`;
+    }).join('');
+    $$('[data-dl]',list).forEach(b=>b.onclick=()=>{
+      const o=outputs[+b.dataset.dl];
+      const a=document.createElement('a'); a.href=o.url; a.download=o.name;
+      document.body.appendChild(a); a.click(); a.remove();
+    });
+  }
+  $('#outClear').onclick=()=>{ outputs.length=0; draw(); };
+  draw();
+}
+
+/* ================= menu ================= */
+function buildMenu(){
+  const m=$('#menu');
+  const items=[
+    {go:'home',nm:'Home',ic:'home'},
+    {go:'studio',nm:'Multi-track Studio',ic:'layers'},
+    {go:'outputs',nm:'Outputs',ic:'folder'},
+    {sep:1},
+    ...TOOLS.map(t=>({go:t.go,nm:t.nm,ic:t.ic,pro:t.pro})),
+  ];
+  m.innerHTML=items.map(it=>it.sep?'<div class="sep"></div>':`<button data-go="${it.go}"${it.pro?' data-pro="1"':''}>${IC[it.ic]}<span>${esc(it.nm)}</span></button>`).join('');
+}
+function toggleMenu(force){
+  const m=$('#menu');
+  m.classList.toggle('open',force);
+}
+
+/* ================= router ================= */
+const routes={
+  home:renderHome, studio:renderStudio, trim:renderTrim, merge:renderMerge, mix:renderMix,
+  split:renderSplit, insert:renderInsert, boost:renderBoost, ringtone:renderRingtone,
+  v2a:renderV2A, a2v:renderA2V, denoise:renderDenoise, outputs:renderOutputs,
+};
+const current=()=>{
+  const h=location.hash.replace(/^#/,'');
+  return routes[h]?h:'home';
+};
+function route(){
+  const key=current();
+  if(st.playing) stPause();
+  if(window.__pageStop) window.__pageStop();
+  window.__pageStop=null;
+  stopToolPlayer();
+  closePopover();
+  closeModal();
+  (routes[key]||renderHome)();
+  $$('#bnav a').forEach(a=>a.classList.toggle('on',a.dataset.nav===key));
+  window.scrollTo({top:0,behavior:'auto'});
+}
+
+/* ================= global events ================= */
+document.addEventListener('click',e=>{
+  const pro=e.target.closest('[data-pro]');
+  if(pro){
+    e.preventDefault();
+    toggleMenu(false);
+    proModal(pro.dataset.go||pro.closest('[data-go]')?.dataset.go);
+    return;
+  }
+  const go=e.target.closest('[data-go]');
+  if(go){
+    e.preventDefault();
+    toggleMenu(false);
+    const target=go.dataset.go;
+    if(current()===target) route(); else location.hash=target;
+    return;
+  }
+  if(!e.target.closest('.menu-wrap')) toggleMenu(false);
+});
+document.addEventListener('keydown',e=>{
+  const tag=(document.activeElement&&document.activeElement.tagName)||'';
+  if(e.key==='Escape'){ closeModal(); closePopover(); toggleMenu(false); }
+  if(e.code==='Space'&&current()==='studio'&&!/INPUT|TEXTAREA|SELECT|BUTTON/.test(tag)){
+    e.preventDefault(); stPlay();
+  }
+  if((e.ctrlKey||e.metaKey)&&(e.key==='z'||e.key==='Z')){
+    if(current()==='studio'){ e.preventDefault(); if(e.shiftKey) stRedo(); else stUndo(); }
+  }
+  if((e.ctrlKey||e.metaKey)&&(e.key==='y'||e.key==='Y')){
+    if(current()==='studio'){ e.preventDefault(); stRedo(); }
+  }
+});
+let rszT=0;
+window.addEventListener('resize',()=>{
+  clearTimeout(rszT);
+  rszT=setTimeout(()=>{
+    if(current()==='studio') stDirty();
+    else if(window.__pageRedraw) window.__pageRedraw();
+  },120);
+});
+
+/* ================= boot ================= */
+window.addEventListener('hashchange',route);
+buildMenu();
+$('#menuBtn').onclick=e=>{ e.stopPropagation(); toggleMenu(); };
+$('#proBtn').onclick=()=>{
+  openModal(`
+    <div class="m-ic">${IC.crown}</div>
+    <h3>Go PRO</h3>
+    <p>PRO adds AI voice changer, the voice recorder, the compressor and priority rendering. This demo includes all the core tools — free.</p>
+    <div class="row" style="justify-content:flex-end"><button class="btn primary" onclick="closeModal()">Nice</button></div>`);
+};
+window.__pageStop=null;
+window.__pageRedraw=null;
+route();
+</script>
+</body>
+</html>

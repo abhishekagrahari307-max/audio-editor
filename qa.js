@@ -9,7 +9,7 @@ const { chromium } = require('playwright');
   page.on('pageerror', e => errors.push('pageerror: ' + e.message));
 
   const base = 'http://127.0.0.1:8080/';
-  const T = '/home/user/audio-site/test/';
+  const T = require('path').join(__dirname, 'test') + '/';
   const downloads = [];
   page.on('download', d => downloads.push(d.suggestedFilename()));
   const step = async (name, fn) => {

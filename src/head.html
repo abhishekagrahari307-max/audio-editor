@@ -197,7 +197,10 @@ label.lbl{font-size:12.5px;font-weight:700;color:var(--muted);letter-spacing:.4p
 .tool-btn{display:flex;flex-direction:column;align-items:center;gap:7px;min-width:76px;padding:11px 10px;border-radius:13px;
   background:rgba(148,163,255,.06);border:1px solid var(--line);color:var(--muted);font-size:12px;font-weight:700;transition:.15s}
 .tool-btn svg{width:20px;height:20px;stroke-width:2.4}
-.tool-btn:hover:not(:disabled){color:var(--text);background:rgba(148,163,255,.12);border-color:var(--line2)}
+.tool-btn:hover:not(.off){color:var(--text);background:rgba(148,163,255,.12);border-color:var(--line2)}
+.tool-btn:active{transform:scale(.96)}
+.tool-btn.off{opacity:.45}
+.tool-btn .tb-v{font-size:9.5px;font-weight:800;letter-spacing:.3px;color:#67e8f9;background:rgba(34,211,238,.12);border:1px solid rgba(34,211,238,.3);padding:1px 7px;border-radius:99px;line-height:1.5;white-space:nowrap}
 .tool-btn:disabled{opacity:.35;cursor:not-allowed}
 .tool-btn.on{color:#7dd3fc;border-color:rgba(34,211,238,.5);background:rgba(34,211,238,.1)}
 .empty-studio{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:64px 20px;text-align:center;color:var(--muted)}

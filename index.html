@@ -197,7 +197,10 @@ label.lbl{font-size:12.5px;font-weight:700;color:var(--muted);letter-spacing:.4p
 .tool-btn{display:flex;flex-direction:column;align-items:center;gap:7px;min-width:76px;padding:11px 10px;border-radius:13px;
   background:rgba(148,163,255,.06);border:1px solid var(--line);color:var(--muted);font-size:12px;font-weight:700;transition:.15s}
 .tool-btn svg{width:20px;height:20px;stroke-width:2.4}
-.tool-btn:hover:not(:disabled){color:var(--text);background:rgba(148,163,255,.12);border-color:var(--line2)}
+.tool-btn:hover:not(.off){color:var(--text);background:rgba(148,163,255,.12);border-color:var(--line2)}
+.tool-btn:active{transform:scale(.96)}
+.tool-btn.off{opacity:.45}
+.tool-btn .tb-v{font-size:9.5px;font-weight:800;letter-spacing:.3px;color:#67e8f9;background:rgba(34,211,238,.12);border:1px solid rgba(34,211,238,.3);padding:1px 7px;border-radius:99px;line-height:1.5;white-space:nowrap}
 .tool-btn:disabled{opacity:.35;cursor:not-allowed}
 .tool-btn.on{color:#7dd3fc;border-color:rgba(34,211,238,.5);background:rgba(34,211,238,.1)}
 .empty-studio{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:64px 20px;text-align:center;color:var(--muted)}
@@ -1268,7 +1271,7 @@ function stSnapshot(){
   st.history.push(snap);
   if(st.history.length>50) st.history.shift();
   st.histIdx=st.history.length-1;
-  stHistUI();
+  stHistUI(); stToolbarUI();
 }
 function stRestore(snap){
   const d=JSON.parse(snap);
@@ -1451,8 +1454,15 @@ function stTimeUI(){
 function stToolbarUI(){
   const s=stSel();
   ['stSplit','stTrim','stDel','stVol','stFi','stFo','stMute','stSpeed','stClean','stRev','stDelT'].forEach(id=>{
-    const b=$('#'+id); if(b) b.disabled=!s;
+    const b=$('#'+id); if(b) b.classList.toggle('off',!s);
   });
+  /* live value badges — simple human numbers */
+  const bd=(id,txt)=>{ const el=$('#'+id); if(el) el.textContent=txt; };
+  bd('stVolV', s?Math.round((s.c.muted?0:s.c.gain)*100)+'%':'');
+  bd('stFiV', s&&s.c.fi?s.c.fi.toFixed(1)+'s':'');
+  bd('stFoV', s&&s.c.fo?s.c.fo.toFixed(1)+'s':'');
+  bd('stMuteV', s&&s.c.muted?'ON':'');
+  bd('stSpeedV', s&&s.c.speed&&s.c.speed!==1?s.c.speed.toFixed(1)+'×':'');
   const m=$('#stMute'); if(m&&s) m.classList.toggle('on',!!s.c.muted);
   const bar=$('#stTrackBar'); if(bar) bar.style.display=st.tracks.length?'flex':'none';
   stHistUI();
@@ -1673,8 +1683,9 @@ function stBindPointer(cv){
 
 /* ---- clip ops ---- */
 const locked=()=>{ const s=stSel(); if(s&&s.t.lock){ toast('Track is locked'); return true; } return false; };
+function stNeedSel(){ const s=stSel(); if(!s){ toast('Select a clip first — tap any clip on the timeline'); return null; } return s; }
 function stSplitAt(){
-  const s=stSel(); if(!s||locked()) return;
+  const s=stNeedSel(); if(!s) return; if(locked()) return;
   const pos=st.playhead, c=s.c;
   if(pos<=c.start+.03||pos>=c.start+c.len-.03) return toast('Move the playhead inside the selected clip');
   const l=pos-c.start;
@@ -1693,9 +1704,9 @@ function stTrimToPlayhead(which){
   else c.len=p-c.start;
   stSnapshot(); toast('Trimmed');
 }
-function stDeleteClip(){ const s=stSel(); if(!s||locked()) return; s.t.clips.splice(s.ci,1); if(!s.t.clips.length) st.tracks.splice(s.ti,1); stSelect(null); stSnapshot(); toast('Clip deleted'); }
-function stDeleteTrack(){ const s=stSel(); if(!s) return; st.tracks.splice(s.ti,1); stSelect(null); stSnapshot(); toast('Track deleted'); }
-function stMuteClip(){ const s=stSel(); if(!s||locked()) return; s.c.muted=!s.c.muted; stSnapshot(); }
+function stDeleteClip(){ const s=stNeedSel(); if(!s) return; if(locked()) return; s.t.clips.splice(s.ci,1); if(!s.t.clips.length) st.tracks.splice(s.ti,1); stSelect(null); stSnapshot(); toast('Clip deleted'); }
+function stDeleteTrack(){ const s=stNeedSel(); if(!s) return; st.tracks.splice(s.ti,1); stSelect(null); stSnapshot(); toast('Track deleted'); }
+function stMuteClip(){ const s=stNeedSel(); if(!s) return; if(locked()) return; s.c.muted=!s.c.muted; stSnapshot(); toast(s.c.muted?'Muted':'Unmuted'); }
 function stSetVolume(v){ const s=stSel(); if(!s) return; if(s.c.muted) s.c.muted=false; s.c.gain=v; }
 function stSetFade(k,v){ const s=stSel(); if(!s) return; s.c[k]=v; }
 function stSetCurve(fc){ const s=stSel(); if(!s) return; s.c.fc=fc; }
@@ -1727,7 +1738,7 @@ function stApplySpeed(speed){
   toast('Speed '+speed.toFixed(1)+'×');
 }
 function stReverse(){
-  const s=stSel(); if(!s||locked()) return;
+  const s=stNeedSel(); if(!s) return; if(locked()) return;
   const c=s.c, buf=stBuf(c.bufId); if(!buf) return;
   const out=AC().createBuffer(buf.numberOfChannels,buf.length,buf.sampleRate);
   for(let ch=0;ch<buf.numberOfChannels;ch++){
@@ -1738,7 +1749,7 @@ function stReverse(){
   stSnapshot(); toast('Reversed');
 }
 async function stDenoiseClip(){
-  const s=stSel(); if(!s||locked()) return;
+  const s=stNeedSel(); if(!s) return; if(locked()) return;
   const c=s.c, buf=stBuf(c.bufId); if(!buf) return;
   toast('AI cleaning clip…',1600);
   await sleep(30);
@@ -1812,7 +1823,7 @@ function stPopover(anchor,title,o){
   const range=$('#popR',pop);
   range.value=o.get();
   const upd=()=>{ $('#popV',pop).textContent=o.fmt(+range.value); };
-  range.oninput=()=>{ o.set(+range.value); upd(); };
+  range.oninput=()=>{ o.set(+range.value); upd(); stToolbarUI(); };
   range.onchange=()=>{ stSnapshot(); };
   upd();
   if(o.ready) o.ready(pop);
@@ -2012,11 +2023,11 @@ function renderStudio(){
       <button class="tool-btn" id="stSplit">${IC.split} Split</button>
       <button class="tool-btn" id="stTrim">${IC.scissors} Trim</button>
       <button class="tool-btn" id="stDel">${IC.trash} Delete</button>
-      <button class="tool-btn" id="stVol">${IC.volume} Volume</button>
-      <button class="tool-btn" id="stFi">${IC.fadein} Fade In</button>
-      <button class="tool-btn" id="stFo">${IC.fadeout} Fade Out</button>
-      <button class="tool-btn" id="stMute">${IC.mute} Mute</button>
-      <button class="tool-btn" id="stSpeed">${IC.clock} Speed</button>
+      <button class="tool-btn" id="stVol">${IC.volume} Volume<span class="tb-v" id="stVolV"></span></button>
+      <button class="tool-btn" id="stFi">${IC.fadein} Fade In<span class="tb-v" id="stFiV"></span></button>
+      <button class="tool-btn" id="stFo">${IC.fadeout} Fade Out<span class="tb-v" id="stFoV"></span></button>
+      <button class="tool-btn" id="stMute">${IC.mute} Mute<span class="tb-v" id="stMuteV"></span></button>
+      <button class="tool-btn" id="stSpeed">${IC.clock} Speed<span class="tb-v" id="stSpeedV"></span></button>
       <button class="tool-btn" id="stClean">${IC.ai} AI Clean</button>
       <button class="tool-btn" id="stRev">${IC.rev} Reverse</button>
       <button class="tool-btn" id="stDelT">${IC.x} Del Track</button>
@@ -2047,6 +2058,7 @@ function renderStudio(){
   $('#stTime').onclick=e=>stJumpPop(e.currentTarget);
   $('#stSplit').onclick=stSplitAt;
   $('#stTrim').onclick=e=>{
+    if(!stNeedSel()) return;
     stSimplePop(e.currentTarget,'Trim selected clip',
      `<div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
         <button class="btn ghost small" id="tp1">Trim start → playhead</button>
@@ -2061,13 +2073,13 @@ function renderStudio(){
   $('#stDelT').onclick=stDeleteTrack;
   $('#stMute').onclick=stMuteClip;
   $('#stVol').onclick=e=>{
-    const s=stSel(); if(!s) return;
-    stPopover(e.currentTarget,'Clip volume (dB)',{min:-60,max:12,step:.5,
-      get:()=>{ const g=s.c.muted?0:s.c.gain; return g>0?Math.round(20*Math.log10(g)*10)/10:0; },
-      set:v=>stSetVolume(Math.pow(10,v/20)), fmt:v=>v.toFixed(1)+' dB'});
+    const s=stNeedSel(); if(!s) return;
+    stPopover(e.currentTarget,'Clip volume',{min:0,max:200,step:5,
+      get:()=>{ const g=s.c.muted?0:s.c.gain; return Math.round(Math.min(200,g*100)); },
+      set:v=>stSetVolume(v/100), fmt:v=>Math.round(v)+'%'});
   };
   const fadePop=(which,label)=>e=>{
-    const s=stSel(); if(!s) return;
+    const s=stNeedSel(); if(!s) return;
     stPopover(e.currentTarget,label,{min:0,max:5,step:.1,
       get:()=>s.c[which],
       set:v=>stSetFade(which,v), fmt:v=>v.toFixed(1)+' s',
@@ -2089,8 +2101,8 @@ function renderStudio(){
   $('#stFi').onclick=fadePop('fi','Fade in');
   $('#stFo').onclick=fadePop('fo','Fade out');
   $('#stSpeed').onclick=e=>{
-    const s=stSel(); if(!s) return;
-    stPopover(e.currentTarget,'Speed (tape-style)',{min:.5,max:2,step:.1,
+    const s=stNeedSel(); if(!s) return;
+    stPopover(e.currentTarget,'Speed',{min:.5,max:2,step:.1,
       get:()=>s.c.speed||1, set:v=>stApplySpeed(v), fmt:v=>v.toFixed(1)+'×'});
   };
   $('#stClean').onclick=stDenoiseClip;

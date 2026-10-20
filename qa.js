@@ -59,27 +59,35 @@ const { chromium } = require('playwright');
     await page.dispatchEvent('#popR', 'input');
     await page.dispatchEvent('#popR', 'change');
     await page.waitForTimeout(200);
+    const spBadge = await page.textContent('#stSpeedV');
+    if (!/1\.5/.test(spBadge)) throw new Error('speed badge: ' + spBadge);
     // REVERSE
     await page.click('#stRev');
     await page.waitForTimeout(150);
     // AI CLEAN (small clip, fast)
     await page.click('#stClean');
     await page.waitForTimeout(4000);
-    // VOLUME dB
+    // VOLUME (now percent)
     await page.click('#stVol');
     await page.waitForSelector('#popR');
-    await page.fill('#popR', '3');
+    await page.fill('#popR', '150');
     await page.dispatchEvent('#popR', 'input');
     await page.dispatchEvent('#popR', 'change');
     await page.waitForTimeout(100);
+    const volVal = await page.textContent('#popV');
+    if (!/150%/.test(volVal)) throw new Error('volume not %: ' + volVal);
+    const volBadge = await page.textContent('#stVolV');
+    if (!/150%/.test(volBadge)) throw new Error('volume badge not %: ' + volBadge);
     await page.keyboard.press('Escape');
     // FADe with curve
     await page.click('#stFi');
     await page.waitForSelector('#popR');
-    await page.fill('#popR', '1');
+    await page.fill('#popR', '1.5');
     await page.dispatchEvent('#popR', 'input');
     await page.click('#stPop [data-fc="exp"]');
     await page.waitForTimeout(100);
+    const fiBadge = await page.textContent('#stFiV');
+    if (!/1\.5/.test(fiBadge)) throw new Error('fade-in badge: ' + fiBadge);
     await page.keyboard.press('Escape');
     // TIME JUMP
     await page.click('#stTime');

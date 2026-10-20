@@ -195,6 +195,47 @@ const { chromium } = require('playwright');
     await page.waitForTimeout(1800);
   });
 
+  await step('voice: real DSP effects + export', async () => {
+    await page.goto(base + '#voice');
+    await page.waitForSelector('#dz input', { state: 'attached' });
+    await page.setInputFiles('#dz input', [T + 'a.wav']);
+    await page.waitForTimeout(500);
+    if (!(await page.locator('#work').isVisible())) throw new Error('work panel not shown');
+    await page.click('#fxRow [data-fx="robot"]');
+    await page.waitForTimeout(1200);
+    await page.click('#exM');
+    await page.waitForTimeout(800);
+    if (!downloads.some(d => d.includes('robot'))) throw new Error('robot mp3 not downloaded');
+  });
+
+  await step('rec: mic record + export', async () => {
+    await page.goto(base + '#rec');
+    await page.waitForTimeout(700);
+    await page.locator('#recBtn').click({ timeout: 5000 });
+    await page.waitForTimeout(1400);
+    if (!(await page.evaluate(() => document.getElementById('ring').classList.contains('rec')))) throw new Error('recording did not start');
+    await page.locator('#recBtn').click({ force: true, timeout: 5000 }); // button pulses while recording
+    await page.waitForTimeout(1600);
+    if (!(await page.locator('#work').isVisible())) throw new Error('recording panel not shown');
+    await page.click('#exM');
+    await page.waitForTimeout(900);
+    if (!downloads.some(d => d.startsWith('voice-note'))) throw new Error('voice-note mp3 not downloaded');
+  });
+
+  await step('comp: real compressor + export', async () => {
+    await page.goto(base + '#comp');
+    await page.waitForSelector('#dz input', { state: 'attached' });
+    await page.setInputFiles('#dz input', [T + 'a.wav']);
+    await page.waitForTimeout(500);
+    await page.click('#run');
+    await page.waitForTimeout(1600);
+    const stats = await page.locator('#statChip').textContent().catch(() => '');
+    if (!/dB/.test(stats)) throw new Error('no compression stats: ' + stats);
+    await page.click('#exM');
+    await page.waitForTimeout(900);
+    if (!downloads.some(d => d.includes('compressed'))) throw new Error('compressed mp3 not downloaded');
+  });
+
   await step('a2v: generate video', async () => {
     await page.goto(base + '#a2v');
     await page.waitForSelector('#dz input',{state:'attached'});
@@ -204,11 +245,20 @@ const { chromium } = require('playwright');
     await page.waitForTimeout(4200);
   });
 
-  await step('outputs list', async () => {
+  await step('outputs: list + zip-all + delete', async () => {
     await page.goto(base + '#outputs');
     await page.waitForTimeout(300);
     const rows = await page.locator('.out-row').count();
-    if (rows < 8) throw new Error('outputs rows=' + rows);
+    if (rows < 10) throw new Error('outputs rows=' + rows);
+    // download-all zip
+    await page.click('#outZip');
+    await page.waitForTimeout(1500);
+    if (!downloads.some(d => d.endsWith('.zip'))) throw new Error('zip download missing');
+    // per-row delete
+    await page.click('[data-del="0"]');
+    await page.waitForTimeout(300);
+    const after = await page.locator('.out-row').count();
+    if (after !== rows - 1) throw new Error('delete failed: ' + rows + ' -> ' + after);
     await page.screenshot({ path: 'shot_outputs.png' });
   });
 

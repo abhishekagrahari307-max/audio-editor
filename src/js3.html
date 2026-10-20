@@ -808,4 +808,307 @@ function renderDenoise(){
   $('#exM').onclick=()=>{ if(S.proc) exportBuffer(S.proc,safeName(S.name)+'-clean','mp3'); else toast('Run "Remove noise" first'); };
   window.__pageRedraw=()=>draw();
 }
+
+/* ================= voice changer (real DSP) ================= */
+function shaperCurve(k){ const n=1024,c=new Float32Array(n); for(let i=0;i<n;i++){ const x=i/(n-1)*2-1; c[i]=Math.tanh(k*x)/Math.tanh(k); } return c; }
+function makeImpulse(ctx,dur,decay){
+  const rate=ctx.sampleRate,len=Math.max(1,Math.ceil(rate*dur));
+  const ir=ctx.createBuffer(2,len,rate);
+  for(let ch=0;ch<2;ch++){ const d=ir.getChannelData(ch);
+    for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len,decay); }
+  return ir;
+}
+async function renderVoiceFx(buf,id){
+  const rate=id==='chipmunk'?1.5:(id==='deep'?0.6:1);
+  const tail=id==='echo'?1.4:(id==='reverb'?2.2:0.15);
+  const sr=buf.sampleRate;
+  const off=new OfflineAudioContext(2,Math.max(1,Math.ceil((buf.duration/rate+tail)*sr)),sr);
+  const src=off.createBufferSource(); src.buffer=buf; src.playbackRate.value=rate;
+  const done=()=>off.startRendering();
+  if(id==='chipmunk'||id==='deep'){
+    src.connect(off.destination); src.start(0); return done();
+  }
+  if(id==='robot'){
+    const sh=off.createWaveShaper(); sh.curve=shaperCurve(24); sh.oversample='4x';
+    const hp=off.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=140;
+    const ring=off.createGain(); ring.gain.value=.5;
+    const lfo=off.createOscillator(); lfo.frequency.value=32;
+    const lg=off.createGain(); lg.gain.value=.5;
+    lfo.connect(lg); lg.connect(ring.gain);
+    src.connect(sh); sh.connect(ring); ring.connect(hp); hp.connect(off.destination);
+    src.start(0); lfo.start(0); return done();
+  }
+  if(id==='echo'){
+    const dry=off.createGain(); dry.gain.value=.85;
+    const dly=off.createDelay(1); dly.delayTime.value=.28;
+    const fb=off.createGain(); fb.gain.value=.42;
+    const wet=off.createGain(); wet.gain.value=.65;
+    src.connect(dry); dry.connect(off.destination);
+    src.connect(dly); dly.connect(fb); fb.connect(dly); dly.connect(wet); wet.connect(off.destination);
+    src.start(0); return done();
+  }
+  if(id==='reverb'){
+    const conv=off.createConvolver(); conv.buffer=makeImpulse(off,2.4,2.6);
+    const wet=off.createGain(); wet.gain.value=.55;
+    const dry=off.createGain(); dry.gain.value=.7;
+    src.connect(dry); dry.connect(off.destination);
+    src.connect(conv); conv.connect(wet); wet.connect(off.destination);
+    src.start(0); return done();
+  }
+  /* phone */
+  const hp=off.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=380; hp.Q.value=.7;
+  const lp=off.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=3000; lp.Q.value=.7;
+  const sh=off.createWaveShaper(); sh.curve=shaperCurve(4); sh.oversample='2x';
+  src.connect(hp); hp.connect(lp); lp.connect(sh); sh.connect(off.destination);
+  src.start(0); return done();
+}
+function renderVoice(){
+  const FX=[
+    {id:'chipmunk',nm:'Chipmunk',ic:'bolt',ds:'High & fast'},
+    {id:'deep',nm:'Deep Voice',ic:'wave',ds:'Low & slow'},
+    {id:'robot',nm:'Robot',ic:'eq',ds:'Metallic ring-mod'},
+    {id:'echo',nm:'Echo',ic:'clock',ds:'Bounce delay'},
+    {id:'reverb',nm:'Reverb',ic:'ai',ds:'Big hall'},
+    {id:'phone',nm:'Phone Call',ic:'mic',ds:'Old phone tone'},
+  ];
+  const S={buf:null,name:'',proc:null,fxId:''};
+  page.innerHTML=toolPage('Voice Changer','Real DSP effects rendered locally in your browser — pitch, ring-mod, delay & convolution. Nothing is uploaded.',
+   `<div class="panel">${dropHtml('Tap to choose an audio file','or drag & drop here')}</div>
+    <div class="panel mt" id="work" hidden>
+      <div class="row between">
+        <div class="file-row" style="flex:1;min-width:230px;border:0;padding:0;gap:10px"><div class="file-ic">${IC.mic}</div><div class="file-meta"><div class="fm-n"><span id="fn"></span></div><div class="fm-s"><span id="fs"></span></div></div></div>
+        <button class="btn ghost small" id="chg">Change file</button>
+      </div>
+      <div class="fx-row mt" id="fxRow">
+        ${FX.map(f=>`<button class="chip" data-fx="${f.id}" title="${f.ds}">${IC[f.ic]} ${f.nm}</button>`).join('')}
+      </div>
+      <div class="wave-wrap mt"><canvas id="wc"></canvas></div>
+      <div class="row mt">
+        <button class="btn ghost" id="pp">${IC.play} Preview</button>
+        <div class="spacer"></div>
+        <button class="btn ghost" id="exW">${IC.download} WAV</button>
+        <button class="btn primary" id="exM">${IC.download} MP3</button>
+      </div>
+    </div>`);
+  const cv=$('#wc');
+  function draw(){
+    if(S.proc) drawPeaks(cv,S.proc.getChannelData(0),{color:'#e879f9'});
+    else if(S.buf) drawPeaks(cv,S.buf.getChannelData(0),{color:'#7d8fd6'});
+  }
+  async function load(f){
+    try{
+      const buf=await decodeFile(f);
+      S.buf=buf; S.name=f.name; S.proc=null; S.fxId='';
+      $('#fn').textContent=f.name;
+      $('#fs').textContent=fmtTime(buf.duration);
+      $('#work').hidden=false;
+      $$('#fxRow .chip').forEach(c=>c.classList.remove('on'));
+      requestAnimationFrame(()=>draw());
+    }catch(e){ toast("Couldn't decode "+f.name); }
+  }
+  attachDrop($('#dz'),fs=>load(fs[0]));
+  $('#chg').onclick=()=>{ const i=$('#dz input'); if(i) i.click(); };
+  async function runFx(id){
+    if(!S.buf) return;
+    const chip=$(`#fxRow [data-fx="${id}"]`);
+    $$('#fxRow .chip').forEach(c=>c.classList.toggle('on',c===chip));
+    toast('Rendering '+FX.find(f=>f.id===id).nm+'…',1400);
+    await sleep(30);
+    try{
+      S.proc=await renderVoiceFx(S.buf,id);
+      S.fxId=id;
+      requestAnimationFrame(()=>draw());
+      toast('Done — Preview it or export');
+    }catch(e){ console.warn(e); toast('Effect render failed'); S.proc=null; }
+  }
+  $$('#fxRow .chip').forEach(c=>c.onclick=()=>runFx(c.dataset.fx));
+  $('#pp').onclick=()=>{ if(S.proc) playBuf(S.proc,$('#pp')); else toast('Pick an effect first'); };
+  $('#exW').onclick=()=>{ if(S.proc) exportBuffer(S.proc,safeName(S.name)+'-'+S.fxId,'wav'); else toast('Pick an effect first'); };
+  $('#exM').onclick=()=>{ if(S.proc) exportBuffer(S.proc,safeName(S.name)+'-'+S.fxId,'mp3'); else toast('Pick an effect first'); };
+  window.__pageRedraw=()=>draw();
+}
+
+/* ================= voice recorder (real mic) ================= */
+function renderRec(){
+  const S={buf:null,rec:null,stream:null,raf:0,t0:0,analyser:null,dataBuf:null,chunks:[]};
+  page.innerHTML=toolPage('Voice Recorder','Record straight from your mic — processed 100% in your browser, nothing is uploaded. Stop, preview, then save as MP3 or WAV.',
+   `<div class="panel">
+      <div class="rec-stage">
+        <div class="rec-ring" id="ring"><button class="rec-btn" id="recBtn" aria-label="Record">${IC.mic}</button></div>
+        <div class="rec-lbl" id="recLbl">Tap to start recording</div>
+        <div class="rec-meter" id="meter" hidden><div id="meterBar"></div></div>
+        <div class="rec-time" id="recTime">00:00</div>
+      </div>
+    </div>
+    <div class="panel mt" id="work" hidden>
+      <div class="row between">
+        <div class="file-row" style="flex:1;min-width:230px;border:0;padding:0;gap:10px"><div class="file-ic">${IC.mic}</div><div class="file-meta"><div class="fm-n"><span id="fn"></span></div><div class="fm-s"><span id="fs"></span></div></div></div>
+      </div>
+      <div class="wave-wrap mt"><canvas id="wc"></canvas></div>
+      <div class="row mt">
+        <button class="btn ghost" id="pp">${IC.play} Preview</button>
+        <div class="spacer"></div>
+        <button class="btn ghost" id="exW">${IC.download} WAV</button>
+        <button class="btn primary" id="exM">${IC.download} MP3</button>
+      </div>
+    </div>`);
+  const cv=$('#wc'), ring=$('#ring'), btn=$('#recBtn'), lbl=$('#recLbl'),
+        meter=$('#meter'), bar=$('#meterBar'), timeEl=$('#recTime');
+  function cleanup(){
+    if(S.raf){ cancelAnimationFrame(S.raf); S.raf=0; }
+    if(S.rec&&S.rec.state==='recording'){ try{S.rec.stop();}catch(e){} }
+    if(S.stream){ S.stream.getTracks().forEach(t=>t.stop()); S.stream=null; }
+    S.rec=null;
+  }
+  btn.onclick=async()=>{
+    if(S.rec&&S.rec.state==='recording'){ stopRec(); return; }
+    try{
+      S.stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    }catch(e){ toast('Microphone permission denied — allow mic access in your browser, then tap again'); return; }
+    const c=AC();
+    const node=c.createMediaStreamSource(S.stream);
+    S.analyser=c.createAnalyser(); S.analyser.fftSize=1024;
+    node.connect(S.analyser);
+    S.dataBuf=new Float32Array(S.analyser.fftSize);
+    const mime=window.MediaRecorder&&MediaRecorder.isTypeSupported('audio/webm;codecs=opus')?'audio/webm;codecs=opus':'';
+    S.rec=new MediaRecorder(S.stream,mime?{mimeType:mime}:undefined);
+    S.chunks=[];
+    S.rec.ondataavailable=e=>{ if(e.data&&e.data.size) S.chunks.push(e.data); };
+    S.rec.onstop=async()=>{
+      S.stream&&S.stream.getTracks().forEach(t=>t.stop()); S.stream=null;
+      const blob=new Blob(S.chunks,{type:(S.rec&&S.rec.mimeType)||'audio/webm'});
+      S.chunks=[];
+      try{
+        const buf=await AC().decodeAudioData(await blob.arrayBuffer());
+        S.buf=buf;
+        $('#fn').textContent='voice-note';
+        $('#fs').textContent=fmtTime(buf.duration);
+        $('#work').hidden=false;
+        requestAnimationFrame(()=>drawPeaks(cv,buf.getChannelData(0),{color:'#60a5fa'}));
+        toast('Recording ready — preview or save');
+      }catch(e){
+        downloadOnly(blob,'voice-note.webm');
+        toast('Recording saved as .webm (preview not supported for this codec)');
+      }
+    };
+    S.rec.start(250);
+    S.t0=performance.now();
+    ring.classList.add('rec');
+    lbl.textContent='Recording… tap to stop';
+    meter.hidden=false;
+    const loop=()=>{
+      if(!S.rec||S.rec.state!=='recording') return;
+      S.analyser.getFloatTimeDomainData(S.dataBuf);
+      let sum=0;
+      for(let i=0;i<S.dataBuf.length;i++) sum+=S.dataBuf[i]*S.dataBuf[i];
+      const rms=Math.sqrt(sum/S.dataBuf.length);
+      bar.style.width=Math.min(100,Math.round(rms*420))+'%';
+      timeEl.textContent=fmtTime((performance.now()-S.t0)/1000);
+      S.raf=requestAnimationFrame(loop);
+    };
+    S.raf=requestAnimationFrame(loop);
+  };
+  function stopRec(){
+    if(S.rec&&S.rec.state==='recording') S.rec.stop();
+    if(S.raf){ cancelAnimationFrame(S.raf); S.raf=0; }
+    ring.classList.remove('rec');
+    meter.hidden=true;
+    lbl.textContent='Saved — preview & download below';
+  }
+  $('#pp').onclick=()=>{ if(S.buf) playBuf(S.buf,$('#pp')); };
+  $('#exW').onclick=()=>{ if(S.buf) exportBuffer(S.buf,'voice-note','wav'); else toast('Record something first'); };
+  $('#exM').onclick=()=>{ if(S.buf) exportBuffer(S.buf,'voice-note','mp3'); else toast('Record something first'); };
+  window.__pageStop=()=>cleanup();
+}
+
+/* ================= compressor (real DynamicsCompressor) ================= */
+function renderComp(){
+  const S={buf:null,name:'',proc:null,th:-18,ra:4,kn:6,at:.01,rl:.25};
+  page.innerHTML=toolPage('Compressor','Squashes the loud peaks and lifts the quiet parts with a real-time dynamics compressor. Drag the sliders, hit Compress, compare and export.',
+   `<div class="panel">${dropHtml('Tap to choose an audio file','or drag & drop here')}</div>
+    <div class="panel mt" id="work" hidden>
+      <div class="row between">
+        <div class="file-row" style="flex:1;min-width:230px;border:0;padding:0;gap:10px"><div class="file-ic">${IC.eq}</div><div class="file-meta"><div class="fm-n"><span id="fn"></span></div><div class="fm-s"><span id="fs"></span></div></div></div>
+        <button class="btn ghost small" id="chg">Change file</button>
+      </div>
+      <div class="grid2 mt">
+        <div><label class="lbl">Threshold <span id="thv" style="color:var(--cyan)">-18 dB</span></label>
+          <input type="range" class="slider" id="th" min="-60" max="0" step="1" value="-18"></div>
+        <div><label class="lbl">Ratio <span id="rav" style="color:var(--cyan)">4:1</span></label>
+          <input type="range" class="slider" id="ra" min="1" max="20" step="0.5" value="4"></div>
+        <div><label class="lbl">Knee <span id="knv" style="color:var(--cyan)">6 dB</span></label>
+          <input type="range" class="slider" id="kn" min="0" max="40" step="1" value="6"></div>
+        <div><label class="lbl">Release <span id="rlv" style="color:var(--cyan)">0.25 s</span></label>
+          <input type="range" class="slider" id="rl" min="0.01" max="1" step="0.01" value="0.25"></div>
+      </div>
+      <div class="row mt" style="gap:14px;align-items:center">
+        <div style="flex:1;min-width:200px"><label class="lbl">Attack <span id="atv" style="color:var(--cyan)">0.010 s</span></label>
+          <input type="range" class="slider" id="at" min="0.001" max="0.3" step="0.001" value="0.01"></div>
+        <button class="btn primary" id="run">${IC.bolt} Compress</button>
+      </div>
+      <div class="row mt" id="stats" hidden><span class="chip" id="statChip"></span></div>
+      <div class="wave-wrap mt"><canvas id="wc"></canvas></div>
+      <div class="row mt">
+        <button class="btn ghost" id="pp">${IC.play} Preview</button>
+        <div class="spacer"></div>
+        <button class="btn ghost" id="exW">${IC.download} WAV</button>
+        <button class="btn primary" id="exM">${IC.download} MP3</button>
+      </div>
+    </div>`);
+  const cv=$('#wc');
+  function draw(color){
+    if(S.proc) drawPeaks(cv,S.proc.getChannelData(0),{color:color||'#e879f9'});
+    else if(S.buf) drawPeaks(cv,S.buf.getChannelData(0),{color:'#7d8fd6'});
+  }
+  function rms(buf){
+    const d=buf.getChannelData(0); let s=0;
+    for(let i=0;i<d.length;i+=4) s+=d[i]*d[i];
+    return Math.sqrt(s/(d.length/4));
+  }
+  async function load(f){
+    try{
+      const buf=await decodeFile(f);
+      S.buf=buf; S.name=f.name; S.proc=null;
+      $('#fn').textContent=f.name;
+      $('#fs').textContent=fmtTime(buf.duration);
+      $('#work').hidden=false;
+      $('#stats').hidden=true;
+      requestAnimationFrame(()=>draw());
+    }catch(e){ toast("Couldn't decode "+f.name); }
+  }
+  attachDrop($('#dz'),fs=>load(fs[0]));
+  $('#chg').onclick=()=>{ const i=$('#dz input'); if(i) i.click(); };
+  $('#th').oninput=e=>{ S.th=+e.target.value; $('#thv').textContent=S.th+' dB'; };
+  $('#ra').oninput=e=>{ S.ra=+e.target.value; $('#rav').textContent=S.ra.toFixed(1).replace(/\.0$/,'')+':1'; };
+  $('#kn').oninput=e=>{ S.kn=+e.target.value; $('#knv').textContent=S.kn+' dB'; };
+  $('#rl').oninput=e=>{ S.rl=+e.target.value; $('#rlv').textContent=S.rl.toFixed(2)+' s'; };
+  $('#at').oninput=e=>{ S.at=+e.target.value; $('#atv').textContent=S.at.toFixed(3)+' s'; };
+  $('#run').onclick=async()=>{
+    if(!S.buf) return;
+    const btn=$('#run'); btn.disabled=true;
+    try{
+      toast('Compressing…',1200);
+      await sleep(30);
+      const off=new OfflineAudioContext(S.buf.numberOfChannels,Math.ceil(S.buf.duration*S.buf.sampleRate),S.buf.sampleRate);
+      const src=off.createBufferSource(); src.buffer=S.buf;
+      const comp=off.createDynamicsCompressor();
+      comp.threshold.value=S.th; comp.ratio.value=S.ra; comp.knee.value=S.kn;
+      comp.attack.value=S.at; comp.release.value=S.rl;
+      src.connect(comp); comp.connect(off.destination);
+      src.start(0);
+      S.proc=await off.startRendering();
+      const dIn=20*Math.log10(Math.max(1e-6,rms(S.buf)));
+      const dOut=20*Math.log10(Math.max(1e-6,rms(S.proc)));
+      $('#statChip').textContent='Output level '+(dOut-dIn>=0?'+':'')+(dOut-dIn).toFixed(1)+' dB vs original';
+      $('#stats').hidden=false;
+      requestAnimationFrame(()=>draw());
+      toast('Compressed — preview or export');
+    }catch(e){ console.warn(e); toast('Processing failed'); }
+    btn.disabled=false;
+  };
+  $('#pp').onclick=()=>{ if(S.proc) playBuf(S.proc,$('#pp')); else toast('Compress first'); };
+  $('#exW').onclick=()=>{ if(S.proc) exportBuffer(S.proc,safeName(S.name)+'-compressed','wav'); else toast('Compress first'); };
+  $('#exM').onclick=()=>{ if(S.proc) exportBuffer(S.proc,safeName(S.name)+'-compressed','mp3'); else toast('Compress first'); };
+  window.__pageRedraw=()=>draw();
+}
 </script>

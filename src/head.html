@@ -145,7 +145,7 @@ label.lbl{font-size:12.5px;font-weight:700;color:var(--muted);letter-spacing:.4p
   background:rgba(148,163,255,.07);border:1px solid var(--line2);color:var(--text);cursor:pointer;transition:.15s;user-select:none}
 .chip:hover{background:rgba(148,163,255,.13)}
 .chip.on{background:linear-gradient(135deg,rgba(99,102,241,.4),rgba(59,130,246,.4));border-color:rgba(99,102,241,.6)}
-.chip svg{width:15px;height:15px}
+.chip svg{width:16px;height:16px;stroke-width:2.5}
 
 /* ---------- waveform ---------- */
 .wave-wrap{position:relative;border-radius:14px;overflow:hidden;border:1px solid var(--line);background:#0a1230}
@@ -168,7 +168,7 @@ label.lbl{font-size:12.5px;font-weight:700;color:var(--muted);letter-spacing:.4p
 .studio-tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
 .tool-btn{display:flex;flex-direction:column;align-items:center;gap:7px;min-width:76px;padding:11px 10px;border-radius:13px;
   background:rgba(148,163,255,.06);border:1px solid var(--line);color:var(--muted);font-size:12px;font-weight:700;transition:.15s}
-.tool-btn svg{width:19px;height:19px}
+.tool-btn svg{width:20px;height:20px;stroke-width:2.4}
 .tool-btn:hover:not(:disabled){color:var(--text);background:rgba(148,163,255,.12);border-color:var(--line2)}
 .tool-btn:disabled{opacity:.35;cursor:not-allowed}
 .tool-btn.on{color:#7dd3fc;border-color:rgba(34,211,238,.5);background:rgba(34,211,238,.1)}
@@ -242,6 +242,16 @@ footer{border-top:1px solid var(--line);margin-top:54px;padding:22px 0 8px;color
   background:#101b40;border:1px solid var(--line2);color:var(--text);font-size:14px;font-weight:600;
   padding:11px 18px;border-radius:12px;box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:.22s;max-width:90vw;text-align:center}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+[hidden]{display:none!important}
+.spin{display:inline-block;animation:rot .9s linear infinite}
+@keyframes rot{to{transform:rotate(360deg)}}
+.enc-hud{position:fixed;left:50%;bottom:138px;transform:translateX(-50%);z-index:99;display:flex;align-items:center;gap:10px;
+  background:rgba(10,16,38,.94);border:1px solid var(--line2);border-radius:14px;padding:11px 15px;backdrop-filter:blur(10px);
+  box-shadow:var(--shadow);min-width:236px;max-width:92vw}
+.enc-hud .enc-ic{display:grid;place-items:center;color:var(--cyan)}
+.enc-hud .enc-txt{font-size:12.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.enc-hud .enc-track{flex:1;height:6px;border-radius:99px;background:rgba(148,163,255,.15);overflow:hidden;min-width:54px}
+.enc-hud .enc-track i{display:block;height:100%;width:0%;border-radius:99px;background:linear-gradient(90deg,#22d3ee,#3b82f6);transition:width .1s linear}
 
 /* ---------- video preview ---------- */
 .av-wrap{border-radius:14px;overflow:hidden;border:1px solid var(--line);background:#000;aspect-ratio:16/9}

@@ -792,6 +792,9 @@ function renderDenoise(){
   $('#run').onclick=async()=>{
     if(!S.buf) return;
     const btn=$('#run'); btn.disabled=true;
+    const orig=btn.innerHTML;
+    btn.innerHTML=IC.spinner+' Processing…';
+    btn.querySelector('svg').classList.add('spin');
     $('#progWrap').style.visibility='visible';
     $('#prog').style.width='3%';
     try{
@@ -801,7 +804,7 @@ function renderDenoise(){
       requestAnimationFrame(()=>draw());
       toast('Done — noise reduced');
     }catch(e){ console.warn(e); toast('Processing failed'); }
-    btn.disabled=false;
+    btn.disabled=false; btn.innerHTML=orig;
   };
   $('#pp').onclick=()=>{ if(S.proc) playBuf(S.proc,$('#pp')); };
   $('#exW').onclick=()=>{ if(S.proc) exportBuffer(S.proc,safeName(S.name)+'-clean','wav'); else toast('Run "Remove noise" first'); };

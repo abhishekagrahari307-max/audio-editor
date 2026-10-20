@@ -145,7 +145,7 @@ label.lbl{font-size:12.5px;font-weight:700;color:var(--muted);letter-spacing:.4p
   background:rgba(148,163,255,.07);border:1px solid var(--line2);color:var(--text);cursor:pointer;transition:.15s;user-select:none}
 .chip:hover{background:rgba(148,163,255,.13)}
 .chip.on{background:linear-gradient(135deg,rgba(99,102,241,.4),rgba(59,130,246,.4));border-color:rgba(99,102,241,.6)}
-.chip svg{width:15px;height:15px}
+.chip svg{width:16px;height:16px;stroke-width:2.5}
 
 /* ---------- waveform ---------- */
 .wave-wrap{position:relative;border-radius:14px;overflow:hidden;border:1px solid var(--line);background:#0a1230}
@@ -168,7 +168,7 @@ label.lbl{font-size:12.5px;font-weight:700;color:var(--muted);letter-spacing:.4p
 .studio-tools{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
 .tool-btn{display:flex;flex-direction:column;align-items:center;gap:7px;min-width:76px;padding:11px 10px;border-radius:13px;
   background:rgba(148,163,255,.06);border:1px solid var(--line);color:var(--muted);font-size:12px;font-weight:700;transition:.15s}
-.tool-btn svg{width:19px;height:19px}
+.tool-btn svg{width:20px;height:20px;stroke-width:2.4}
 .tool-btn:hover:not(:disabled){color:var(--text);background:rgba(148,163,255,.12);border-color:var(--line2)}
 .tool-btn:disabled{opacity:.35;cursor:not-allowed}
 .tool-btn.on{color:#7dd3fc;border-color:rgba(34,211,238,.5);background:rgba(34,211,238,.1)}
@@ -242,6 +242,16 @@ footer{border-top:1px solid var(--line);margin-top:54px;padding:22px 0 8px;color
   background:#101b40;border:1px solid var(--line2);color:var(--text);font-size:14px;font-weight:600;
   padding:11px 18px;border-radius:12px;box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:.22s;max-width:90vw;text-align:center}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+[hidden]{display:none!important}
+.spin{display:inline-block;animation:rot .9s linear infinite}
+@keyframes rot{to{transform:rotate(360deg)}}
+.enc-hud{position:fixed;left:50%;bottom:138px;transform:translateX(-50%);z-index:99;display:flex;align-items:center;gap:10px;
+  background:rgba(10,16,38,.94);border:1px solid var(--line2);border-radius:14px;padding:11px 15px;backdrop-filter:blur(10px);
+  box-shadow:var(--shadow);min-width:236px;max-width:92vw}
+.enc-hud .enc-ic{display:grid;place-items:center;color:var(--cyan)}
+.enc-hud .enc-txt{font-size:12.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.enc-hud .enc-track{flex:1;height:6px;border-radius:99px;background:rgba(148,163,255,.15);overflow:hidden;min-width:54px}
+.enc-hud .enc-track i{display:block;height:100%;width:0%;border-radius:99px;background:linear-gradient(90deg,#22d3ee,#3b82f6);transition:width .1s linear}
 
 /* ---------- video preview ---------- */
 .av-wrap{border-radius:14px;overflow:hidden;border:1px solid var(--line);background:#000;aspect-ratio:16/9}
@@ -639,6 +649,7 @@ const IC={
   eq:I('<path d="M5 20v-9M10 20V4M15 20v-6M20 20V8"/>'),
   shield:I('<path d="m12 3 7 3v5.2c0 4.8-3.4 8.3-7 9.8-3.6-1.5-7-5-7-9.8V6l7-3Z"/>'),
   bolt:F('<path d="M13 3 5 13.5h5L9 21l8-10.5h-5L13 3Z"/>'),
+  spinner:I('<path d="M12 3a9 9 0 1 1-6.36 2.64"/>'),
   clock:I('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
   upload:I('<path d="M12 15V5"/><path d="m8.5 8.5 3.5-3.5 3.5 3.5"/><path d="M5 19.5h14"/>'),
   download:I('<path d="M12 4v10"/><path d="m8.5 10.5 3.5 3.5 3.5-3.5"/><path d="M5 19.5h14"/>'),
@@ -743,9 +754,106 @@ function sliceBuf(buf,a,b){
   for(let c=0;c<buf.numberOfChannels;c++) out.getChannelData(c).set(buf.getChannelData(c).subarray(i0,i0+n));
   return out;
 }
-function exportBuffer(buf,name,fmt){
+/* ---- encoding progress HUD ---- */
+function encHud(on,p=0,label){
+  let el=$('#encHud');
+  if(!on){ if(el) el.remove(); return; }
+  if(!el){
+    el=document.createElement('div'); el.id='encHud'; el.className='enc-hud';
+    el.innerHTML=`<span class="enc-ic">${IC.spinner}</span><span class="enc-txt"></span><div class="enc-track"><i></i></div>`;
+    document.body.appendChild(el);
+    el.querySelector('.enc-ic svg').classList.add('spin');
+  }
+  el.querySelector('.enc-txt').textContent=label||'Encoding MP3…';
+  el.querySelector('.enc-track i').style.width=Math.round(p*100)+'%';
+}
+
+/* ---- Web-Worker MP3 encoder (UI never freezes) ---- */
+let _mp3w=null,_mp3wDead=false;
+function _lameSrc(){
+  for(const s of document.scripts){ const t=s.textContent; if(t&&t.length>20000&&t.indexOf('Mp3Encoder')>-1) return t; }
+  return null;
+}
+const _MP3_WORKER_CODE='\n;('+function(){
+  self.onmessage=function(e){
+    var d=e.data,L=self.lamejs,bs=1152;
+    var enc=new L.Mp3Encoder(d.nc,d.sr,d.kbps);
+    var out=[],i=0,len=d.L.length;
+    function step(){
+      var guard=0;
+      while(i<len&&guard<120){
+        var end=Math.min(len,i+bs);
+        var l=d.L.subarray(i,end);
+        var m=d.nc>1?enc.encodeBuffer(l,d.R.subarray(i,end)):enc.encodeBuffer(l);
+        if(m.length)out.push(m);
+        i=end;guard++;
+      }
+      if(i<len){ self.postMessage({t:'p',p:i/len}); setTimeout(step,0); }
+      else{
+        var f=enc.flush(); if(f.length)out.push(f);
+        var total=0,k; for(k=0;k<out.length;k++) total+=out[k].length;
+        var u=new Uint8Array(total); var o=0;
+        for(k=0;k<out.length;k++){ u.set(out[k],o); o+=out[k].length; }
+        self.postMessage({t:'d',u:u},[u.buffer]);
+      }
+    }
+    step();
+  };
+}.toString()+')();';
+function mp3WorkerGet(){
+  if(_mp3wDead) return null;
+  if(_mp3w) return _mp3w;
+  try{
+    const src=_lameSrc(); if(!src) return null;
+    _mp3w=new Worker(URL.createObjectURL(new Blob([src+_MP3_WORKER_CODE],{type:'text/javascript'})));
+    _mp3w.onerror=()=>{ _mp3wDead=true; try{_mp3w.terminate();}catch(e){} _mp3w=null; };
+    return _mp3w;
+  }catch(e){ _mp3wDead=true; return null; }
+}
+async function mp3BlobAsync(buf,kbps=160,onProg){
+  let b=buf,sr=buf.sampleRate;
+  const ok=[44100,48000,32000,22050,16000,11025,8000].includes(sr);
+  if(!ok){ b=resampleLinear(buf,44100); sr=44100; }
+  const nc=b.numberOfChannels,len=b.length;
+  const Lch=toInt16(b.getChannelData(0));
+  const Rch=nc>1?toInt16(b.getChannelData(1)):Lch;
+  const w=mp3WorkerGet();
+  if(w){
+    try{
+      return await new Promise((resolve,reject)=>{
+        let done=false;
+        const onmsg=e=>{
+          const d=e.data;
+          if(d.t==='p'){ if(onProg) onProg(d.p); return; }
+          if(d.t==='d'&&!done){ done=true; w.removeEventListener('message',onmsg); w.removeEventListener('error',onerr); if(onProg) onProg(1); resolve(new Blob([d.u],{type:'audio/mpeg'})); }
+        };
+        const onerr=()=>{ if(!done){ done=true; w.removeEventListener('message',onmsg); w.removeEventListener('error',onerr); reject(new Error('worker encode failed')); } };
+        w.addEventListener('message',onmsg); w.addEventListener('error',onerr);
+        w.postMessage({L:Lch,R:Rch,nc,sr,kbps:Math.min(kbps,320)});
+      });
+    }catch(e){ console.warn('worker mp3 failed, falling back',e); }
+  }
+  /* chunked async fallback — yields to keep UI smooth */
+  const L=window.lamejs; if(!L||!L.Mp3Encoder) return null;
+  const enc=new L.Mp3Encoder(nc,sr,Math.min(kbps,320));
+  const bs=1152,out=[];
+  for(let i=0;i<len;i+=bs){
+    const l=Lch.subarray(i,Math.min(len,i+bs));
+    const m=nc>1?enc.encodeBuffer(l,Rch.subarray(i,Math.min(len,i+bs))):enc.encodeBuffer(l);
+    if(m.length)out.push(m);
+    if(((i/bs)|0)%60===59){ if(onProg) onProg(i/len); await sleep(0); }
+  }
+  const e2=enc.flush(); if(e2.length)out.push(e2);
+  if(onProg) onProg(1);
+  return new Blob(out,{type:'audio/mpeg'});
+}
+async function exportBuffer(buf,name,fmt,kbps=160){
   if(fmt==='mp3'){
-    const m=mp3Blob(buf,160);
+    encHud(true,0,'Encoding '+name+'.mp3…');
+    let m=null;
+    try{ m=await mp3BlobAsync(buf,kbps,p=>encHud(true,p,'Encoding '+name+'.mp3…')); }
+    catch(e){ console.warn('mp3 encode error',e); }
+    encHud(false);
     if(m){ downloadBlob(m,name+'.mp3'); return; }
     toast('MP3 encoder unavailable — saved as WAV');
   }
@@ -1560,7 +1668,11 @@ function stExportOpen(){
     const out=await renderStudioMix();
     closeModal();
     if(fmt==='mp3'){
-      const mb=mp3Blob(out,kbps);
+      encHud(true,0,'Encoding multitrack-mix-'+kbps+'.mp3…');
+      let mb=null;
+      try{ mb=await mp3BlobAsync(out,kbps,p=>encHud(true,p,'Encoding multitrack-mix-'+kbps+'.mp3…')); }
+      catch(e){ console.warn(e); }
+      encHud(false);
       if(mb){ downloadBlob(mb,'multitrack-mix-'+kbps+'.mp3'); return; }
       toast('MP3 encoder unavailable — saved as WAV');
     }
@@ -2484,6 +2596,9 @@ function renderDenoise(){
   $('#run').onclick=async()=>{
     if(!S.buf) return;
     const btn=$('#run'); btn.disabled=true;
+    const orig=btn.innerHTML;
+    btn.innerHTML=IC.spinner+' Processing…';
+    btn.querySelector('svg').classList.add('spin');
     $('#progWrap').style.visibility='visible';
     $('#prog').style.width='3%';
     try{
@@ -2493,7 +2608,7 @@ function renderDenoise(){
       requestAnimationFrame(()=>draw());
       toast('Done — noise reduced');
     }catch(e){ console.warn(e); toast('Processing failed'); }
-    btn.disabled=false;
+    btn.disabled=false; btn.innerHTML=orig;
   };
   $('#pp').onclick=()=>{ if(S.proc) playBuf(S.proc,$('#pp')); };
   $('#exW').onclick=()=>{ if(S.proc) exportBuffer(S.proc,safeName(S.name)+'-clean','wav'); else toast('Run "Remove noise" first'); };

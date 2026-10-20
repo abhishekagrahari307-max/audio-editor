@@ -630,7 +630,11 @@ function stExportOpen(){
     const out=await renderStudioMix();
     closeModal();
     if(fmt==='mp3'){
-      const mb=mp3Blob(out,kbps);
+      encHud(true,0,'Encoding multitrack-mix-'+kbps+'.mp3…');
+      let mb=null;
+      try{ mb=await mp3BlobAsync(out,kbps,p=>encHud(true,p,'Encoding multitrack-mix-'+kbps+'.mp3…')); }
+      catch(e){ console.warn(e); }
+      encHud(false);
       if(mb){ downloadBlob(mb,'multitrack-mix-'+kbps+'.mp3'); return; }
       toast('MP3 encoder unavailable — saved as WAV');
     }
